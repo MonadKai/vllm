@@ -21,7 +21,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Inference-only Parrot-Audio model compatible with HuggingFace weights."""
+"""Inference-only Parrot2-Audio model compatible with HuggingFace weights."""
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Optional, Set, Tuple, TypedDict, Union
@@ -30,20 +30,20 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BatchFeature
-from transformers.models.parrot_audio import ParrotAudioConfig
-from transformers.models.parrot_audio import \
-    ParrotAudioEncoder as TransformersParrotAudioEncoder
-from transformers.models.parrot_audio import ParrotAudioFeatureExtractor
-from transformers.models.parrot_audio import \
-    ParrotAudioMultiModalProjector as \
-    TransformersParrotAudioMultiModalProjector
-from transformers.models.parrot_audio import (ParrotAudioProcessor,
-                                              ParrotQwen2ForCausalLM)
+from transformers.models.parrot2_audio import Parrot2AudioConfig
+from transformers.models.parrot2_audio import \
+    Parrot2AudioEncoder as TransformersParrot2AudioEncoder
+from transformers.models.parrot2_audio import Parrot2AudioFeatureExtractor
+from transformers.models.parrot2_audio import \
+    Parrot2AudioMultiModalProjector as \
+    TransformersParrot2AudioMultiModalProjector
+from transformers.models.parrot2_audio import (Parrot2AudioProcessor,
+                                               ParrotQwen3ForCausalLM)
 from vllm.config import VllmConfig
 from vllm.model_executor.models.interfaces import (MultiModalEmbeddings,
                                                    SupportsMultiModal,
                                                    SupportsPP)
-from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM
+from vllm.model_executor.models.qwen3 import Qwen3ForCausalLM
 from vllm.model_executor.models.utils import (AutoWeightsLoader,
                                               init_vllm_registered_model,
                                               maybe_prefix,
@@ -68,10 +68,10 @@ from .parrot_audio_commons.multi_modal_projector import \
     ParrotAudioMultiModalProjector as VLLMParrotAudioMultiModalProjector
 
 
-class ParrotAudioProcessingInfo(BaseProcessingInfo):
+class Parrot2AudioProcessingInfo(BaseProcessingInfo):
 
     def get_hf_config(self):
-        return self.ctx.get_hf_config(ParrotAudioConfig)
+        return self.ctx.get_hf_config(Parrot2AudioConfig)
 
     def get_hf_processor(
         self,
@@ -79,18 +79,18 @@ class ParrotAudioProcessingInfo(BaseProcessingInfo):
         # Ignored in initialization
         sampling_rate: Optional[int] = None,
         **kwargs: object,
-    ) -> ParrotAudioProcessor:
-        return self.ctx.get_hf_processor(ParrotAudioProcessor, **kwargs)
+    ) -> Parrot2AudioProcessor:
+        return self.ctx.get_hf_processor(Parrot2AudioProcessor, **kwargs)
 
     def get_feature_extractor(
         self,
         *,
         # Ignored in initialization
         sampling_rate: Optional[int] = None,
-    ) -> ParrotAudioFeatureExtractor:
+    ) -> Parrot2AudioFeatureExtractor:
         hf_processor = self.get_hf_processor(sampling_rate=sampling_rate)
         feature_extractor = hf_processor.feature_extractor  # type: ignore
-        assert isinstance(feature_extractor, ParrotAudioFeatureExtractor)
+        assert isinstance(feature_extractor, Parrot2AudioFeatureExtractor)
         return feature_extractor
 
     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
@@ -98,7 +98,7 @@ class ParrotAudioProcessingInfo(BaseProcessingInfo):
         return {"audio": max_output_lengths}
 
 
-class ParrotAudioDummyInputsBuilder(BaseDummyInputsBuilder[ParrotAudioProcessingInfo]):
+class Parrot2AudioDummyInputsBuilder(BaseDummyInputsBuilder[Parrot2AudioProcessingInfo]):
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         num_audios = mm_counts.get("audio", 0)
 
@@ -126,7 +126,7 @@ class ParrotAudioDummyInputsBuilder(BaseDummyInputsBuilder[ParrotAudioProcessing
         }
 
 
-class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessingInfo]):
+class Parrot2AudioMultiModalProcessor(BaseMultiModalProcessor[Parrot2AudioProcessingInfo]):
 
     def _get_data_parser(self) -> MultiModalDataParser:
         feature_extractor = self.info.get_feature_extractor()
@@ -174,7 +174,7 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
         hf_processor_mm_kwargs: Mapping[str, object],
         out_mm_kwargs: MultiModalKwargs,
     ) -> list[PromptUpdate]:
-        processor: ParrotAudioProcessor = self.info.get_hf_processor(**hf_processor_mm_kwargs)
+        processor: Parrot2AudioProcessor = self.info.get_hf_processor(**hf_processor_mm_kwargs)
         tokenizer = self.info.get_tokenizer()
         vocab = tokenizer.get_vocab()
 
@@ -229,14 +229,14 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
 
 
 @MULTIMODAL_REGISTRY.register_processor(
-    ParrotAudioMultiModalProcessor,
-    info=ParrotAudioProcessingInfo,
-    dummy_inputs=ParrotAudioDummyInputsBuilder)
-class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
+    Parrot2AudioMultiModalProcessor,
+    info=Parrot2AudioProcessingInfo,
+    dummy_inputs=Parrot2AudioDummyInputsBuilder)
+class Parrot2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
-        # HINT: parrot_audio is a mixed precision model
+        # HINT: parrot2_audio is a mixed precision model
         from vllm.model_executor.model_loader.utils import \
             set_default_torch_dtype
 
@@ -268,6 +268,8 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
 
         self.quant_config = quant_config
 
+        # HINT: for parrot2_audio's language_model, `_tied_weights_keys` is always empty
+        assert config.text_config.tie_word_embeddings == False, "tie_word_embeddings must be False"
         # HINT: language_model raw dtype is bfloat16
         vllm_config.model_config.dtype = config.text_config.torch_dtype
         self.language_model_dtype = config.text_config.torch_dtype
@@ -276,7 +278,7 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
                 vllm_config=vllm_config,
                 hf_config=config.text_config,
                 prefix=maybe_prefix(prefix, "language_model"),
-                architectures=["Qwen2ForCausalLM"],
+                architectures=["Qwen3ForCausalLM"],
             )
  
         self.make_empty_intermediate_tensors = (
