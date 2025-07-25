@@ -526,7 +526,7 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
                         f"<|audio_bos|><|AUDIO|><|audio_eos|>")
             if model_type == "minicpmo":
                 return "(<audio>./</audio>)"
-            if model_type == "parrot_audio":
+            if model_type in ("parrot_audio", "parrot_audio_moe", "parrot2_audio"):
                 return "<|vision_start|>[AUDIO]<|vision_end|>"
             raise TypeError(f"Unknown model type: {model_type}")
         elif modality == "video":
