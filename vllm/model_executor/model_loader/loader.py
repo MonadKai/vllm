@@ -447,28 +447,40 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        with set_default_torch_dtype(model_config.dtype):
-            with target_device:
-                model = _initialize_model(vllm_config=vllm_config)
+        if model_config.architectures[0] in ("ParrotAudioForConditionalGeneration", "Parrot2AudioForConditionalGeneration"):
+            if model_config.dtype == torch.float32:
+                with set_default_torch_dtype(model_config.dtype):
+                    with target_device:
+                        model = _initialize_model(vllm_config=vllm_config)
+                logger.warning("Casting language_model to bfloat16")
+                cast_language_model_precision(model, torch.bfloat16)
+            else:
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
+                ensure_model_precision(model_config, model)
+        else:
+            with set_default_torch_dtype(model_config.dtype):
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
 
-            weights_to_load = {name for name, _ in model.named_parameters()}
-            loaded_weights = model.load_weights(
-                self.get_all_weights(model_config, model))
-            self.counter_after_loading_weights = time.perf_counter()
-            logger.info(
-                "Loading weights took %.2f seconds",
-                self.counter_after_loading_weights -
-                self.counter_before_loading_weights)
-            # We only enable strict check for non-quantized models
-            # that have loaded weights tracking currently.
-            if model_config.quantization is None and loaded_weights is not None:
-                weights_not_loaded = weights_to_load - loaded_weights
-                if weights_not_loaded:
-                    raise ValueError(
-                        "Following weights were not initialized from "
-                        f"checkpoint: {weights_not_loaded}")
+        weights_to_load = {name for name, _ in model.named_parameters()}
+        loaded_weights = model.load_weights(
+            self.get_all_weights(model_config, model))
+        self.counter_after_loading_weights = time.perf_counter()
+        logger.info(
+            "Loading weights took %.2f seconds",
+            self.counter_after_loading_weights -
+            self.counter_before_loading_weights)
+        # We only enable strict check for non-quantized models
+        # that have loaded weights tracking currently.
+        if model_config.quantization is None and loaded_weights is not None:
+            weights_not_loaded = weights_to_load - loaded_weights
+            if weights_not_loaded:
+                raise ValueError(
+                    "Following weights were not initialized from "
+                    f"checkpoint: {weights_not_loaded}")
 
-            _process_weights_after_loading(model, model_config, target_device)
+        _process_weights_after_loading(model, model_config, target_device)
 
         return model.eval()
 
