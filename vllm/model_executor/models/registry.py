@@ -195,14 +195,14 @@ _MULTIMODAL_MODELS = {
     "MolmoForCausalLM": ("molmo", "MolmoForCausalLM"),
     "NVLM_D": ("nvlm_d", "NVLM_D_Model"),
     "PaliGemmaForConditionalGeneration": ("paligemma", "PaliGemmaForConditionalGeneration"),  # noqa: E501
+    "ParrotAudioForConditionalGeneration": ("parrot_audio", "ParrotAudioForConditionalGeneration"),  # noqa: E501
+    "Parrot2AudioForConditionalGeneration": ("parrot2_audio", "Parrot2AudioForConditionalGeneration"),  # noqa: E501
     "Phi3VForCausalLM": ("phi3v", "Phi3VForCausalLM"),
     "PixtralForConditionalGeneration": ("pixtral", "PixtralForConditionalGeneration"),  # noqa: E501
     "QwenVLForConditionalGeneration": ("qwen_vl", "QwenVLForConditionalGeneration"),  # noqa: E501
     "Qwen2VLForConditionalGeneration": ("qwen2_vl", "Qwen2VLForConditionalGeneration"),  # noqa: E501
     "Qwen2_5_VLForConditionalGeneration": ("qwen2_5_vl", "Qwen2_5_VLForConditionalGeneration"),  # noqa: E501
     "Qwen2AudioForConditionalGeneration": ("qwen2_audio", "Qwen2AudioForConditionalGeneration"),  # noqa: E501
-    "ParrotAudioForConditionalGeneration": ("parrot_audio", "ParrotAudioForConditionalGeneration"),  # noqa: E501
-    "Parrot2AudioForConditionalGeneration": ("parrot2_audio", "Parrot2AudioForConditionalGeneration"),  # noqa: E501
     "Qwen2_5OmniModel": ("qwen2_5_omni_thinker", "Qwen2_5OmniThinkerForConditionalGeneration"),  # noqa: E501
     "UltravoxModel": ("ultravox", "UltravoxModel"),
     "Phi4MMForCausalLM": ("phi4mm", "Phi4MMForCausalLM"),

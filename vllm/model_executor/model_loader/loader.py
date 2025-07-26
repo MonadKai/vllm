@@ -63,7 +63,7 @@ from vllm.platforms import current_platform
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from vllm.utils import is_pin_memory_available
-from vllm.model_executor.mixed_precision_utils import (
+from vllm.model_executor.model_loader.mixed_precision_utils import (
     ensure_model_precision,
     cast_language_model_precision,
 )
@@ -450,7 +450,7 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        if model_config.architectures[0] in ("ParrotAudioForConditionalGeneration", "Parrot2AudioForConditionalGeneration"):
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
             if model_config.dtype == torch.float32:
                 with set_default_torch_dtype(model_config.dtype):
                     with target_device:
