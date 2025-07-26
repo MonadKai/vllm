@@ -22,6 +22,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only Parrot-Audio model compatible with HuggingFace weights."""
+
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Optional, Set, Tuple, TypedDict, Union
@@ -31,45 +32,60 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BatchFeature
 from transformers.models.parrot_audio import ParrotAudioConfig
-from transformers.models.parrot_audio import \
-    ParrotAudioEncoder as TransformersParrotAudioEncoder
+from transformers.models.parrot_audio import (
+    ParrotAudioEncoder as TransformersParrotAudioEncoder,
+)
 from transformers.models.parrot_audio import ParrotAudioFeatureExtractor
-from transformers.models.parrot_audio import \
-    ParrotAudioMultiModalProjector as \
-    TransformersParrotAudioMultiModalProjector
-from transformers.models.parrot_audio import (ParrotAudioProcessor,
-                                              ParrotQwen2ForCausalLM)
+from transformers.models.parrot_audio import (
+    ParrotAudioMultiModalProjector as TransformersParrotAudioMultiModalProjector,
+)
+from transformers.models.parrot_audio import (
+    ParrotAudioProcessor,
+    ParrotQwen2ForCausalLM,
+)
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
-from vllm.model_executor.models.interfaces import (MultiModalEmbeddings,
-                                                   SupportsMultiModal,
-                                                   SupportsPP)
+from vllm.model_executor.models.interfaces import (
+    MultiModalEmbeddings,
+    SupportsMultiModal,
+    SupportsPP,
+)
 from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM
-from vllm.model_executor.models.utils import (AutoWeightsLoader,
-                                              init_vllm_registered_model,
-                                              maybe_prefix,
-                                              merge_multimodal_embeddings)
+from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
+    init_vllm_registered_model,
+    maybe_prefix,
+    merge_multimodal_embeddings,
+)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.inputs import (MultiModalDataDict, MultiModalFieldConfig,
-                                    MultiModalKwargs, NestedTensors)
-from vllm.multimodal.parse import (AudioProcessorItems, MultiModalDataItems,
-                                   MultiModalDataParser)
-from vllm.multimodal.processing import (BaseMultiModalProcessor,
-                                        BaseProcessingInfo, PromptReplacement,
-                                        PromptUpdate, PromptUpdateDetails)
+from vllm.multimodal.inputs import (
+    MultiModalDataDict,
+    MultiModalFieldConfig,
+    MultiModalKwargs,
+    NestedTensors,
+)
+from vllm.multimodal.parse import (
+    AudioProcessorItems,
+    MultiModalDataItems,
+    MultiModalDataParser,
+)
+from vllm.multimodal.processing import (
+    BaseMultiModalProcessor,
+    BaseProcessingInfo,
+    PromptReplacement,
+    PromptUpdate,
+    PromptUpdateDetails,
+)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 
-from .parrot_audio_commons import (ParrotAudioInputs,
-                                   _get_feat_extract_output_lengths)
-from .parrot_audio_commons.audio_encoder import \
-    ParrotAudioEncoder as VLLMParrotAudioEncoder
-from .parrot_audio_commons.multi_modal_projector import \
-    ParrotAudioMultiModalProjector as VLLMParrotAudioMultiModalProjector
+from .parrot_audio_commons import ParrotAudioInputs, _get_feat_extract_output_lengths
+from .parrot_audio_commons.sense_voice_small import SenseVoiceEncoderSmall
+from .parrot_audio_commons.multi_modal_projector import LinearAdaptor
 
 
 class ParrotAudioProcessingInfo(BaseProcessingInfo):
-
     def get_hf_config(self):
         return self.ctx.get_hf_config(ParrotAudioConfig)
 
@@ -121,13 +137,13 @@ class ParrotAudioDummyInputsBuilder(BaseDummyInputsBuilder[ParrotAudioProcessing
         num_audios = mm_counts.get("audio", 0)
 
         return {
-            "audio":
-            self._get_dummy_audios(length=audio_len, num_audios=num_audios)
+            "audio": self._get_dummy_audios(length=audio_len, num_audios=num_audios)
         }
 
 
-class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessingInfo]):
-
+class ParrotAudioMultiModalProcessor(
+    BaseMultiModalProcessor[ParrotAudioProcessingInfo]
+):
     def _get_data_parser(self) -> MultiModalDataParser:
         feature_extractor = self.info.get_feature_extractor()
         # return MultiModalDataParser(target_sr=feature_extractor.sampling_rate)
@@ -174,7 +190,9 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
         hf_processor_mm_kwargs: Mapping[str, object],
         out_mm_kwargs: MultiModalKwargs,
     ) -> list[PromptUpdate]:
-        processor: ParrotAudioProcessor = self.info.get_hf_processor(**hf_processor_mm_kwargs)
+        processor: ParrotAudioProcessor = self.info.get_hf_processor(
+            **hf_processor_mm_kwargs
+        )
         tokenizer = self.info.get_tokenizer()
         vocab = tokenizer.get_vocab()
 
@@ -182,10 +200,8 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
         # audio_token = getattr(processor, "audio_token", "<|AUDIO|>")
         audio_token = getattr(processor, "audio_token", "[FAKE_AUDIO]")
         # HINT: audio model use vision token ???
-        audio_bos_token = getattr(processor, "audio_bos_token",
-                                  "<|vision_start|>")
-        audio_eos_token = getattr(processor, "audio_eos_token",
-                                  "<|vision_end|>")
+        audio_bos_token = getattr(processor, "audio_bos_token", "<|vision_start|>")
+        audio_eos_token = getattr(processor, "audio_eos_token", "<|vision_end|>")
 
         audio_token_id = vocab[audio_token]
         audio_bos_id = vocab[audio_bos_token]
@@ -198,7 +214,9 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
             if isinstance(feature_attention_mask, torch.Tensor):
                 mask_lengths = feature_attention_mask.sum(-1)
             elif isinstance(feature_attention_mask, list):
-                mask_lengths = torch.tensor([i.sum(-1).item() for i in feature_attention_mask])
+                mask_lengths = torch.tensor(
+                    [i.sum(-1).item() for i in feature_attention_mask]
+                )
             _, audio_output_lens = _get_feat_extract_output_lengths(mask_lengths)
 
             audio_output_lengths = audio_output_lens.tolist()
@@ -209,8 +227,10 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
                 audios = mm_items.get_items("audio", AudioProcessorItems)
                 audio_len = audios.get_audio_length(item_idx)
 
-                raise ValueError(f"The audio (len={audio_len}) is too short "
-                                 "to be represented inside the model")
+                raise ValueError(
+                    f"The audio (len={audio_len}) is too short "
+                    "to be represented inside the model"
+                )
 
             audio_tokens = [audio_token_id] * num_features
 
@@ -228,17 +248,80 @@ class ParrotAudioMultiModalProcessor(BaseMultiModalProcessor[ParrotAudioProcessi
         ]
 
 
+# @support_torch_compile(dynamic_arg_dims={"input_features": [0, 1], "audio_feature_lengths": 0})
+class ParrotAudioEncoder(nn.Module):
+    """
+    Transformer encoder consisting of *config.encoder_layers* self attention layers. Each layer is a
+    [`ParrotAudioEncoderLayer`].
+
+    Args:
+        config: ParrotAudioEncoderConfig
+    """
+
+    # Ignore copy
+    def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__()
+        config = vllm_config.model_config.hf_config
+        audio_config = config.audio_config
+        self.sense_voice_small = SenseVoiceEncoderSmall(
+            input_size=audio_config.input_size,
+            output_size=audio_config.output_size,
+            attention_heads=audio_config.attention_heads,
+            linear_units=audio_config.linear_units,
+            num_blocks=audio_config.num_blocks,
+            tp_blocks=audio_config.tp_blocks,
+            dropout_rate=audio_config.dropout_rate,
+            attention_dropout_rate=audio_config.attention_dropout_rate,
+            normalize_before=audio_config.normalize_before,
+            kernel_size=audio_config.kernel_size,
+            sanm_shfit=audio_config.sanm_shfit,
+        )
+
+    def forward(
+        self,
+        input_features: torch.Tensor,  # [16, 500, 560]
+        attention_mask: Optional[torch.Tensor] = None,  # None
+        audio_feature_lengths: Optional[torch.Tensor] = None,  # [16]
+        head_mask: Optional[torch.Tensor] = None,  # None
+        output_attentions: Optional[bool] = None,  # None
+        output_hidden_states: Optional[bool] = None,  # None
+        return_dict: Optional[bool] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        xs_pad, olens = self.sense_voice_small(
+            input_features, ilens=audio_feature_lengths
+        )  # xs_pad: [16, 500, 512], olens: [16]
+        return xs_pad, olens
+
+
+# @support_torch_compile(dynamic_arg_dims={"audio_features": [0, 1]})
+class ParrotAudioMultiModalProjector(nn.Module):
+    def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__()
+        config = vllm_config.model_config.hf_config
+        audio_config = config.audio_config
+        text_config = config.text_config
+
+        self.adaptor = LinearAdaptor(
+            encoder_dim=audio_config.output_size,
+            ffn_dim=config.adaptor_ffn_dim,
+            llm_dim=text_config.hidden_size,
+        )
+
+    def forward(self, audio_features: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.adaptor(audio_features)
+        return hidden_states
+
+
 @MULTIMODAL_REGISTRY.register_processor(
     ParrotAudioMultiModalProcessor,
     info=ParrotAudioProcessingInfo,
-    dummy_inputs=ParrotAudioDummyInputsBuilder)
+    dummy_inputs=ParrotAudioDummyInputsBuilder,
+)
 class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
-
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         # HINT: parrot_audio is a mixed precision model
-        from vllm.model_executor.model_loader.utils import \
-            set_default_torch_dtype
+        from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
@@ -252,19 +335,28 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
             if os.environ.get("VLLM_USE_TRANSFORMERS_AUDIO_ENCODER", "0") == "1":
                 self.audio_tower = TransformersParrotAudioEncoder(config.audio_config)
             else:
-                self.audio_tower = VLLMParrotAudioEncoder(vllm_config=vllm_config)
+                self.audio_tower = ParrotAudioEncoder(vllm_config=vllm_config)
             if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
                 self.audio_tower.forward = torch.compile(self.audio_tower.forward)
 
         # HINT: multi_modal_projector raw dtype is float32
         self.multi_modal_projector_dtype = self.audio_tower_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
-            if os.environ.get("VLLM_USE_TRANSFORMERS_MULTI_MODAL_PROJECTOR", "0") == "1":
-                self.multi_modal_projector = TransformersParrotAudioMultiModalProjector(config)
+            if (
+                os.environ.get("VLLM_USE_TRANSFORMERS_MULTI_MODAL_PROJECTOR", "0")
+                == "1"
+            ):
+                self.multi_modal_projector = TransformersParrotAudioMultiModalProjector(
+                    config
+                )
             else:
-                self.multi_modal_projector = VLLMParrotAudioMultiModalProjector(vllm_config=vllm_config)
+                self.multi_modal_projector = ParrotAudioMultiModalProjector(
+                    vllm_config=vllm_config
+                )
             if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
-                self.multi_modal_projector.forward = torch.compile(self.multi_modal_projector.forward)
+                self.multi_modal_projector.forward = torch.compile(
+                    self.multi_modal_projector.forward
+                )
 
         self.quant_config = quant_config
 
@@ -278,16 +370,16 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
                 prefix=maybe_prefix(prefix, "language_model"),
                 architectures=["Qwen2ForCausalLM"],
             )
- 
+
         self.make_empty_intermediate_tensors = (
-            self.language_model.make_empty_intermediate_tensors)
+            self.language_model.make_empty_intermediate_tensors
+        )
 
-
-    def _validate_and_reshape_mm_tensor(self, mm_input: object,
-                                        name: str) -> torch.Tensor:
+    def _validate_and_reshape_mm_tensor(
+        self, mm_input: object, name: str
+    ) -> torch.Tensor:
         if not isinstance(mm_input, (torch.Tensor, list)):
-            raise ValueError(f"Incorrect type of {name}. "
-                             f"Got type: {type(mm_input)}")
+            raise ValueError(f"Incorrect type of {name}. Got type: {type(mm_input)}")
         if isinstance(mm_input, torch.Tensor):
             return torch.concat(list(mm_input))
         # HINT: branch that never hit
@@ -298,53 +390,72 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
                 pad_value = False
             elif mm_input[0][0].dtype == torch.int:
                 pad_value = 0
-            return pad_sequence(mm_input[0], batch_first=True, padding_side='right', padding_value=pad_value)
+            return pad_sequence(
+                mm_input[0],
+                batch_first=True,
+                padding_side="right",
+                padding_value=pad_value,
+            )
         else:
             return torch.concat(mm_input)
 
     def _parse_and_validate_audio_input(
-            self, **kwargs: object) -> Optional[ParrotAudioInputs]:
-        input_features = kwargs.pop('input_features', None)  # [16, 1, 500, 560]
-        feature_attention_mask = kwargs.pop('feature_attention_mask', None)  # [16, 1, 500]
+        self, **kwargs: object
+    ) -> Optional[ParrotAudioInputs]:
+        input_features = kwargs.pop("input_features", None)  # [16, 1, 500, 560]
+        feature_attention_mask = kwargs.pop(
+            "feature_attention_mask", None
+        )  # [16, 1, 500]
         if input_features is None:
             return None
         input_features = self._validate_and_reshape_mm_tensor(
-            input_features, 'input_features')  # [16, 500, 560]
+            input_features, "input_features"
+        )  # [16, 500, 560]
         feature_attention_mask = self._validate_and_reshape_mm_tensor(
-            feature_attention_mask, 'feature_attention_mask')  # [16, 500]
+            feature_attention_mask, "feature_attention_mask"
+        )  # [16, 500]
         if not isinstance(input_features, (torch.Tensor, list)):
-            raise ValueError("Incorrect type of audio input features. "
-                             f"Got type: {type(input_features)}")
-        return ParrotAudioInputs(input_features=input_features,
-                                feature_attention_mask=feature_attention_mask)
+            raise ValueError(
+                "Incorrect type of audio input features. "
+                f"Got type: {type(input_features)}"
+            )
+        return ParrotAudioInputs(
+            input_features=input_features, feature_attention_mask=feature_attention_mask
+        )
 
-    def _process_audio_input(self,
-                             audio_input: ParrotAudioInputs) -> tuple[torch.Tensor]:
-
+    def _process_audio_input(
+        self, audio_input: ParrotAudioInputs
+    ) -> tuple[torch.Tensor]:
         input_features = audio_input["input_features"]  # [16, 500, 560] or [1, 79, 560]
-        feature_attention_mask = audio_input["feature_attention_mask"]  # [16, 500] or [1, 79]
+        feature_attention_mask = audio_input[
+            "feature_attention_mask"
+        ]  # [16, 500] or [1, 79]
 
-        audio_feat_lengths, audio_output_lengths = (
-            self.audio_tower._get_feat_extract_output_lengths(
-                feature_attention_mask.sum(-1)))  # shape [16] or shape [1], shape [16] or shape[1]
-        
+        audio_feat_lengths, audio_output_lengths = _get_feat_extract_output_lengths(
+            feature_attention_mask.sum(-1)
+        )  # shape [16] or shape [1], shape [16] or shape[1]
+
         # HINT: compute in float32 dtype
-        audio_outputs = self.audio_tower(input_features,
-                                         audio_feature_lengths=audio_feat_lengths)
+        audio_outputs = self.audio_tower(
+            input_features, audio_feature_lengths=audio_feat_lengths
+        )
         selected_audio_feature = audio_outputs[0]
         # HINT: compute in float32 dtype
         audio_features = self.multi_modal_projector(selected_audio_feature)
         num_audios, max_audio_tokens, embed_dim = audio_features.shape
         audio_output_lengths = audio_output_lengths.unsqueeze(1)
-        audio_features_mask = torch.arange(max_audio_tokens).expand(
-            num_audios, max_audio_tokens).to(
-                audio_output_lengths.device) < audio_output_lengths
-        masked_audio_features = audio_features[audio_features_mask].view(
-            -1, embed_dim)
+        audio_features_mask = (
+            torch.arange(max_audio_tokens)
+            .expand(num_audios, max_audio_tokens)
+            .to(audio_output_lengths.device)
+            < audio_output_lengths
+        )
+        masked_audio_features = audio_features[audio_features_mask].view(-1, embed_dim)
 
         # Split to tuple of embeddings for individual audio input.
-        return torch.split(masked_audio_features,
-                           audio_output_lengths.flatten().tolist())
+        return torch.split(
+            masked_audio_features, audio_output_lengths.flatten().tolist()
+        )
 
     def get_language_model(self) -> torch.nn.Module:
         return self.language_model
@@ -355,7 +466,9 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
             return None
         masked_audio_features = self._process_audio_input(audio_input)
         # HINT: convert to input_embeds dtype
-        masked_audio_features = tuple(t.to(self.language_model_dtype) for t in masked_audio_features)
+        masked_audio_features = tuple(
+            t.to(self.language_model_dtype) for t in masked_audio_features
+        )
         return masked_audio_features
 
     def get_input_embeddings(
@@ -363,12 +476,19 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[NestedTensors] = None,
     ) -> torch.Tensor:
-        inputs_embeds = self.language_model.get_input_embeddings(input_ids)  # [492, 5120]
+        inputs_embeds = self.language_model.get_input_embeddings(
+            input_ids
+        )  # [492, 5120]
         if multimodal_embeddings is not None:
-            multimodal_embeddings = [i.to(inputs_embeds.dtype) for i in multimodal_embeddings]  # [79, 5120]
+            multimodal_embeddings = [
+                i.to(inputs_embeds.dtype) for i in multimodal_embeddings
+            ]  # [79, 5120]
             inputs_embeds = merge_multimodal_embeddings(
-                input_ids, inputs_embeds, multimodal_embeddings,
-                self.config.audio_token_index)  # [492, 5120]
+                input_ids,
+                inputs_embeds,
+                multimodal_embeddings,
+                self.config.audio_token_index,
+            )  # [492, 5120]
         return inputs_embeds
 
     def forward(
@@ -379,22 +499,26 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         inputs_embeds: Optional[torch.Tensor] = None,  # None
         **kwargs: object,  # input_features shape: [16, 1, 500, 560] or [1, 1, 79, 560], feature_attention_mask shape: [16, 1, 500] or [1, 1, 79]
     ) -> Union[torch.Tensor, IntermediateTensors]:
-
         if intermediate_tensors is not None:
             inputs_embeds = None
 
         # NOTE: In v1, inputs_embeds is always generated at model runner, this
         # condition is for v0 compatibility.
         elif inputs_embeds is None:
-            multimodal_embeddings = self.get_multimodal_embeddings(**kwargs)  # [500, 5120] or [79, 5120]
-            inputs_embeds = self.get_input_embeddings(input_ids,
-                                                      multimodal_embeddings)  # [8192, 5120] or [492, 5120]
+            multimodal_embeddings = self.get_multimodal_embeddings(
+                **kwargs
+            )  # [500, 5120] or [79, 5120]
+            inputs_embeds = self.get_input_embeddings(
+                input_ids, multimodal_embeddings
+            )  # [8192, 5120] or [492, 5120]
             input_ids = None
 
-        hidden_states = self.language_model(input_ids,  # None
-                                           positions,  # [492]
-                                           intermediate_tensors,  # None
-                                           inputs_embeds=inputs_embeds)
+        hidden_states = self.language_model(
+            input_ids,  # None
+            positions,  # [492]
+            intermediate_tensors,  # None
+            inputs_embeds=inputs_embeds,
+        )
         return hidden_states
 
     def compute_logits(
@@ -402,11 +526,9 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
-        return self.language_model.compute_logits(hidden_states,
-                                                  sampling_metadata)
+        return self.language_model.compute_logits(hidden_states, sampling_metadata)
 
-    def load_weights(self, weights: Iterable[Tuple[str,
-                                                   torch.Tensor]]) -> Set[str]:
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
         loader = AutoWeightsLoader(self)
         loaded_params = loader.load_weights(weights)
         return loaded_params
