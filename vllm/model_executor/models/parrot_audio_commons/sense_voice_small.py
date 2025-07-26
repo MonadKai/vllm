@@ -138,12 +138,18 @@ class MultiHeadedAttentionSANM(nn.Module):
             torch.Tensor: Transformed value tensor (#batch, n_head, time2, d_k).
 
         """
-        b, t, d = x.size()  # [16, 500, 512]
-        q_k_v = self.linear_q_k_v(x)  # [16, 500, 1536]
-        q, k, v = torch.split(q_k_v, int(self.h * self.d_k), dim=-1)  # q: [16, 500, 512], k: [16, 500, 512], v: [16, 500, 512]
-        q_h = torch.reshape(q, (b, t, self.h, self.d_k)).transpose(1, 2)  # [16, 4, 500, 128]
-        k_h = torch.reshape(k, (b, t, self.h, self.d_k)).transpose(1, 2)  # [16, 4, 500, 128]
-        v_h = torch.reshape(v, (b, t, self.h, self.d_k)).transpose(1, 2)  # [16, 4, 500, 128]
+        b, t, d = x.size()
+        q_k_v = self.linear_q_k_v(x)
+        q, k, v = torch.split(q_k_v, int(self.h * self.d_k), dim=-1)
+        q_h = torch.reshape(q, (b, t, self.h, self.d_k)).transpose(
+            1, 2
+        )  # (batch, head, time1, d_k)
+        k_h = torch.reshape(k, (b, t, self.h, self.d_k)).transpose(
+            1, 2
+        )  # (batch, head, time2, d_k)
+        v_h = torch.reshape(v, (b, t, self.h, self.d_k)).transpose(
+            1, 2
+        )  # (batch, head, time2, d_k)
 
         return q_h, k_h, v_h, v
 
@@ -274,7 +280,6 @@ def sequence_mask(lengths: torch.Tensor, maxlen: Optional[int] = None, dtype: to
     return mask.type(dtype).to(device) if device is not None else mask.type(dtype)
 
 
-# TODO: use in modeling_parrot_audio.py
 class EncoderLayerSANM(nn.Module):
     def __init__(
         self,
