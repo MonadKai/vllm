@@ -37,7 +37,7 @@ class BaseModelLoader(ABC):
         """Load a model with the given configurations."""
         device_config = vllm_config.device_config
         target_device = torch.device(device_config.device)
-        if model_config.architectures[0] in ("ParrotAudioForConditionalGeneration", "Parrot2AudioForConditionalGeneration"):
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
             if model_config.dtype == torch.float32:
                 with set_default_torch_dtype(model_config.dtype):
                     with target_device:
