@@ -4,10 +4,14 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
-
+import logging
 from vllm.config import LoadConfig, ModelConfig, VllmConfig
 from vllm.model_executor.model_loader.utils import (
     initialize_model, process_weights_after_loading, set_default_torch_dtype)
+
+from .mixed_precision_utils import ensure_model_precision, cast_language_model_precision
+
+logger = logging.getLogger(__name__)
 
 
 class BaseModelLoader(ABC):
@@ -33,11 +37,23 @@ class BaseModelLoader(ABC):
         """Load a model with the given configurations."""
         device_config = vllm_config.device_config
         target_device = torch.device(device_config.device)
-        with set_default_torch_dtype(model_config.dtype):
-            with target_device:
-                model = initialize_model(vllm_config=vllm_config,
-                                         model_config=model_config)
-            # Quantization does not happen in `load_weights` but after it
-            self.load_weights(model, model_config)
-            process_weights_after_loading(model, model_config, target_device)
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
+            if model_config.dtype == torch.float32:
+                with set_default_torch_dtype(model_config.dtype):
+                    with target_device:
+                        model = initialize_model(vllm_config=vllm_config, model_config=model_config)
+                logger.warning("Casting language_model to bfloat16")
+                cast_language_model_precision(model, torch.bfloat16)
+            else:
+                with target_device:
+                    model = initialize_model(vllm_config=vllm_config, model_config=model_config)
+                ensure_model_precision(model_config, model)
+        else:
+            with set_default_torch_dtype(model_config.dtype):
+                with target_device:
+                    model = initialize_model(vllm_config=vllm_config, model_config=model_config)
+
+        # Quantization does not happen in `load_weights` but after it
+        self.load_weights(model, model_config)
+        process_weights_after_loading(model, model_config, target_device)
         return model.eval()
