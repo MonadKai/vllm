@@ -423,6 +423,8 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
         elif modality == "audio":
             if model_type == "ultravox":
                 return "<|audio|>"
+            if model_type == "parrot_audio":
+                return "<|vision_start|>[FAKE_AUDIO]<|vision_end|>"
             if model_type == "qwen2_audio":
                 return (f"Audio {current_count}: "
                         f"<|audio_bos|><|AUDIO|><|audio_eos|>")
