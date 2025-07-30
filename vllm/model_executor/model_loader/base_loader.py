@@ -41,7 +41,7 @@ class BaseModelLoader(ABC):
         load_device = device_config.device if load_config.device is None else \
                       load_config.device
         target_device = torch.device(load_device)
-        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio", "parrot2_audio_moe"):
             if model_config.dtype == torch.float32:
                 with set_default_torch_dtype(model_config.dtype):
                     with target_device:
