@@ -31,14 +31,12 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BatchFeature
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceEncoder as TransformersParrot2AudioMoeEncoder
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceFeatureExtractor as Parrot2AudioMoeFeatureExtractor
+# from transformers.models.parrot_sensevoice import ParrotSenseVoiceProcessor as Parrot2AudioMoeProcessor
 from transformers.models.parrot2_audio_moe import (
     Parrot2AudioMoeConfig,
-    Parrot2AudioMoeFeatureExtractor,
     Parrot2AudioMoeProcessor,
-    ParrotQwen3MoeForCausalLM,
-)
-from transformers.models.parrot2_audio_moe import (
-    Parrot2AudioMoeEncoder as TransformersParrot2AudioMoeEncoder,
 )
 from transformers.models.parrot2_audio_moe import (
     Parrot2AudioMoeMultiModalProjector as TransformersParrot2AudioMoeMultiModalProjector,
