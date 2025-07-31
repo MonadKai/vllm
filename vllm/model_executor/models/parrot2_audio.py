@@ -31,18 +31,11 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BatchFeature
-from transformers.models.parrot2_audio import (
-    Parrot2AudioConfig,
-    Parrot2AudioFeatureExtractor,
-    Parrot2AudioProcessor,
-    ParrotQwen3ForCausalLM,
-)
-from transformers.models.parrot2_audio import (
-    Parrot2AudioEncoder as TransformersParrot2AudioEncoder,
-)
-from transformers.models.parrot2_audio import (
-    Parrot2AudioMultiModalProjector as TransformersParrot2AudioMultiModalProjector,
-)
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceEncoder as TransformersParrot2AudioEncoder
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceFeatureExtractor as Parrot2AudioFeatureExtractor
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceProcessor as Parrot2AudioProcessor
+from transformers.models.parrot2_audio import Parrot2AudioConfig
+from transformers.models.parrot2_audio import Parrot2AudioMultiModalProjector as TransformersParrot2AudioMultiModalProjector
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
 from vllm.model_executor.models.interfaces import (
