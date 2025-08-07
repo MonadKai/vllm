@@ -77,9 +77,9 @@ from vllm.multimodal.processing import (
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 
-from .parrot_audio_commons import ParrotAudioInputs, _get_feat_extract_output_lengths
-from .parrot_audio_commons.multi_modal_projector import LinearAdaptor
-from .parrot_audio_commons.sense_voice_small import SenseVoiceEncoderSmall
+from parrot_commons import ParrotAudioInputs, _get_feat_extract_output_lengths
+from parrot_commons.multi_modal_projector import LinearAdaptor
+from parrot_commons.sense_voice_small import SenseVoiceEncoderSmall
 
 
 class Parrot2AudioMoeProcessingInfo(BaseProcessingInfo):
