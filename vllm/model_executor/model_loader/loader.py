@@ -58,6 +58,13 @@ from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from vllm.utils import is_pin_memory_available
 
+from .mixed_precision_utils import (
+    cast_language_model_precision,
+    ensure_model_precision,
+)
+
+logger = init_logger(__name__)
+
 
 @contextmanager
 def device_loading_context(module: torch.nn.Module,
@@ -401,23 +408,35 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        with set_default_torch_dtype(model_config.dtype):
-            with target_device:
-                model = _initialize_model(vllm_config=vllm_config)
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
+            if model_config.dtype == torch.float32:
+                with set_default_torch_dtype(model_config.dtype):
+                    with target_device:
+                        model = _initialize_model(vllm_config=vllm_config)
+                logger.warning("Casting language_model to bfloat16")
+                cast_language_model_precision(model, torch.bfloat16)
+            else:
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
+                ensure_model_precision(model_config, model)
+        else:
+            with set_default_torch_dtype(model_config.dtype):
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
 
-            weights_to_load = {name for name, _ in model.named_parameters()}
-            loaded_weights = model.load_weights(
-                self._get_all_weights(model_config, model))
-            # We only enable strict check for non-quantized models
-            # that have loaded weights tracking currently.
-            if model_config.quantization is None and loaded_weights is not None:
-                weights_not_loaded = weights_to_load - loaded_weights
-                if weights_not_loaded:
-                    raise ValueError(
-                        "Following weights were not initialized from "
-                        f"checkpoint: {weights_not_loaded}")
+        weights_to_load = {name for name, _ in model.named_parameters()}
+        loaded_weights = model.load_weights(
+            self._get_all_weights(model_config, model))
+        # We only enable strict check for non-quantized models
+        # that have loaded weights tracking currently.
+        if model_config.quantization is None and loaded_weights is not None:
+            weights_not_loaded = weights_to_load - loaded_weights
+            if weights_not_loaded:
+                raise ValueError(
+                    "Following weights were not initialized from "
+                    f"checkpoint: {weights_not_loaded}")
 
-            _process_weights_after_loading(model, model_config, target_device)
+        _process_weights_after_loading(model, model_config, target_device)
 
         return model.eval()
 
@@ -1377,18 +1396,30 @@ class RunaiModelStreamerLoader(BaseModelLoader):
         model_config = vllm_config.model_config
 
         target_device = torch.device(device_config.device)
-        with set_default_torch_dtype(model_config.dtype):
-            with target_device:
-                model = _initialize_model(vllm_config=vllm_config)
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
+            if model_config.dtype == torch.float32:
+                with set_default_torch_dtype(model_config.dtype):
+                    with target_device:
+                        model = _initialize_model(vllm_config=vllm_config)
+                logger.warning("Casting language_model to bfloat16")
+                cast_language_model_precision(model, torch.bfloat16)
+            else:
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
+                ensure_model_precision(model_config, model)
+        else:
+            with set_default_torch_dtype(model_config.dtype):
+                with target_device:
+                    model = _initialize_model(vllm_config=vllm_config)
 
-            model_weights = model_config.model
-            if hasattr(model_config, "model_weights"):
-                model_weights = model_config.model_weights
-            model.load_weights(
-                self._get_weights_iterator(model_weights,
-                                           model_config.revision))
+        model_weights = model_config.model
+        if hasattr(model_config, "model_weights"):
+            model_weights = model_config.model_weights
+        model.load_weights(
+            self._get_weights_iterator(model_weights,
+                                        model_config.revision))
 
-            _process_weights_after_loading(model, model_config, target_device)
+        _process_weights_after_loading(model, model_config, target_device)
         return model.eval()
 
 
