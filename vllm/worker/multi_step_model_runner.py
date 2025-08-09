@@ -476,7 +476,7 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
         # path for warm up runs
         if not model_input.is_multi_step:
             return self._base_model_runner.execute_model(
-                frozen_model_input, kv_caches, intermediate_tensors, num_steps)
+                frozen_model_input, None, intermediate_tensors, num_steps)
 
         # make sure we skip the sampler on the lask rank and only pythonize
         # if CPU is ahead.
@@ -488,8 +488,7 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
                     device="cpu",
                     pin_memory=True)
 
-            self._base_model_runner.model.sampler.include_gpu_probs_tensor = (
-                True)
+            self._base_model_runner.sampler.include_gpu_probs_tensor = True
             if frozen_model_input.sampling_metadata:
                 frozen_model_input.sampling_metadata.skip_sampler_cpu_output = (
                     True)
@@ -538,7 +537,7 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
 
         # Execute the model
         output = self._base_model_runner.execute_model(frozen_model_input,
-                                                       kv_caches,
+                                                       None,
                                                        intermediate_tensors,
                                                        num_steps=1)
 

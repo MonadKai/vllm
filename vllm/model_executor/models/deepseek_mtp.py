@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Iterable, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
 from transformers import PretrainedConfig
 
-from vllm.attention.backends.abstract import AttentionMetadata
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -69,8 +67,6 @@ class DeepSeekMultiTokenPredictorLayer(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_cache: torch.Tensor,
-        attn_metadata: AttentionMetadata,
         previous_hidden_states: torch.Tensor,
         inputs_embeds: Optional[torch.Tensor] = None,
         spec_step_index: int = 0,
@@ -88,11 +84,9 @@ class DeepSeekMultiTokenPredictorLayer(nn.Module):
 
         hidden_states, residual = self.mtp_block(positions=positions,
                                                  hidden_states=hidden_states,
-                                                 kv_cache=kv_cache,
-                                                 attn_metadata=attn_metadata,
                                                  residual=None)
         hidden_states = residual + hidden_states
-        return self.shared_head(hidden_states)
+        return hidden_states
 
 
 class DeepSeekMultiTokenPredictor(nn.Module):
@@ -122,20 +116,17 @@ class DeepSeekMultiTokenPredictor(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
         previous_hidden_states: torch.Tensor,
         inputs_embeds: Optional[torch.Tensor] = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        return self.layers[str(self.mtp_start_layer_idx + spec_step_idx)](
+        current_step_idx = (spec_step_idx % self.num_mtp_layers)
+        return self.layers[str(self.mtp_start_layer_idx + current_step_idx)](
             input_ids,
             positions,
-            kv_caches[spec_step_idx],
-            attn_metadata,
             previous_hidden_states,
             inputs_embeds,
-            spec_step_idx,
+            current_step_idx,
         )
 
     def compute_logits(
@@ -144,9 +135,12 @@ class DeepSeekMultiTokenPredictor(nn.Module):
         sampling_metadata: SamplingMetadata,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        mtp_layer = self.layers[str(self.mtp_start_layer_idx + spec_step_idx)]
+        current_step_idx = (spec_step_idx % self.num_mtp_layers)
+        mtp_layer = self.layers[str(self.mtp_start_layer_idx +
+                                    current_step_idx)]
         logits = self.logits_processor(mtp_layer.shared_head.head,
-                                       hidden_states, sampling_metadata)
+                                       mtp_layer.shared_head(hidden_states),
+                                       sampling_metadata)
         return logits
 
 
@@ -159,22 +153,18 @@ class DeepSeekMTP(nn.Module):
                                                  prefix=maybe_prefix(
                                                      prefix, "model"))
 
-        self.sampler = get_sampler()
-
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
         previous_hidden_states: torch.Tensor,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions, kv_caches,
-                                   attn_metadata, previous_hidden_states,
-                                   inputs_embeds, spec_step_idx)
+        hidden_states = self.model(input_ids, positions,
+                                   previous_hidden_states, inputs_embeds,
+                                   spec_step_idx)
         return hidden_states
 
     def compute_logits(
@@ -185,14 +175,6 @@ class DeepSeekMTP(nn.Module):
     ) -> Optional[torch.Tensor]:
         return self.model.compute_logits(hidden_states, sampling_metadata,
                                          spec_step_idx)
-
-    def sample(
-        self,
-        logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(logits, sampling_metadata)
-        return next_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]]) -> Set[str]:
