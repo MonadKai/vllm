@@ -26,7 +26,7 @@
 # limitations under the License.
 from collections.abc import Iterable, Mapping, Sequence
 from functools import partial
-from typing import Any, Literal, Optional, Set, Tuple, TypedDict, Union
+from typing import Any, Literal, Optional, TypedDict, Union
 
 import torch
 import torch.nn as nn
@@ -65,9 +65,7 @@ from vllm.multimodal.inputs import (
 )
 from vllm.multimodal.parse import (
     DictEmbeddingItems,
-    ImageItem,
     ImageSize,
-    ModalityData,
     ModalityDataItems,
     MultiModalDataItems,
     MultiModalDataParser,
@@ -153,14 +151,7 @@ class DotsOCRMultiModalDataParser(MultiModalDataParser):
 
 class DotsOCRProcessingInfo(BaseProcessingInfo):
     def get_hf_config(self) -> DotsOCRConfig:
-        config = self.ctx.get_hf_config(DotsOCRConfig)
-        # if not isinstance(config, DotsOCRConfig):
-        #     raise TypeError(f"Expected DotsOCRConfig, got {type(config)}")
-
-        # if hasattr(config, "vision_config") and isinstance(config.vision_config, dict):
-        #     config.vision_config = DotsVisionConfig(**config.vision_config)
-
-        return config
+        return self.ctx.get_hf_config(DotsOCRConfig)
 
     def get_hf_processor(
         self,
@@ -315,13 +306,10 @@ class DotsOCRProcessingInfo(BaseProcessingInfo):
 class DotsOCRDummyInputsBuilder(BaseDummyInputsBuilder[DotsOCRProcessingInfo]):
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         num_images = mm_counts.get("image", 0)
-        # num_videos = mm_counts.get("video", 0)
 
         hf_processor = self.info.get_hf_processor()
         image_token: str = hf_processor.image_token
-        # video_token: str = hf_processor.video_token
 
-        # return image_token * num_images + video_token * num_videos
         return image_token * num_images
 
     def get_dummy_mm_data(
@@ -371,7 +359,6 @@ class DotsOCRMultiModalProcessor(BaseMultiModalProcessor[DotsOCRProcessingInfo])
 
         placeholder = {
             "image": vocab[hf_processor.image_token],
-            # "video": vocab[hf_processor.video_token],
         }
 
         merge_length = image_processor.merge_size**2
@@ -412,7 +399,6 @@ class DotsOCRForCausalLM(nn.Module, SupportsMultiModal):
             "model.": "language_model.model.",
         }
     )
-    # _tp_plan = {}
 
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
@@ -688,7 +674,7 @@ class DotsOCRForCausalLM(nn.Module, SupportsMultiModal):
     ) -> Optional[torch.Tensor]:
         return self.language_model.compute_logits(hidden_states, sampling_metadata)
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
