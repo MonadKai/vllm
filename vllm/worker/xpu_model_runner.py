@@ -564,7 +564,8 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPUWithSamplingMetadata]):
                 intermediate_tensors=intermediate_tensors,
                 **MultiModalKwargs.as_kwargs(
                     model_input.multi_modal_kwargs or {},
-                    dtype=self.model_config.dtype,
+                    # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
+                    dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
                     device=self.device,
                 ),
             )
