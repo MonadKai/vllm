@@ -192,7 +192,8 @@ class FusedMoEParallelConfig:
     @property
     def use_flashinfer_cutlass_kernels(self):
         return (envs.VLLM_USE_FLASHINFER_MOE_FP4
-                and has_flashinfer_cutlass_fused_moe())
+                and has_flashinfer_cutlass_fused_moe()
+                and envs.VLLM_FLASHINFER_MOE_BACKEND == "throughput")
 
     @staticmethod
     def make(tp_size_: int, dp_size_: int,
@@ -325,8 +326,8 @@ class FusedMoEConfig:
 
     def __post_init__(self):
         if self.dp_size > 1:
-            logger.debug("Using FusedMoEConfig::max_num_tokens=%d",
-                         self.max_num_tokens)
+            logger.debug_once("Using FusedMoEConfig::max_num_tokens=%d",
+                              self.max_num_tokens)
 
         assert self.max_num_tokens > 0
 

@@ -8,11 +8,9 @@ from typing import (Final, Literal, Optional, Protocol, TypedDict, TypeVar,
 
 import torch
 import torch.nn as nn
-from packaging.version import Version
 from transformers import (BatchFeature, CLIPVisionConfig, LlavaConfig,
                           PixtralVisionConfig, PretrainedConfig,
                           SiglipVisionConfig)
-from transformers import __version__ as TRANSFORMERS_VERSION
 from transformers.models.llava import LlavaProcessor
 from transformers.models.pixtral import PixtralProcessor
 
@@ -307,29 +305,14 @@ class PixtralHFMultiModalProcessor(
 
         pixel_values = processed_outputs.get("pixel_values")
         if pixel_values is not None:
-            # Before/after https://github.com/huggingface/transformers/pull/35122
-            if Version(TRANSFORMERS_VERSION) <= Version("4.48.3"):
-                images = mm_data["images"]
-                assert isinstance(images, list)
+            # Avoid padding since we need the output for each image to be
+            # independent of other images for the cache to work correctly
+            image_sizes = processed_outputs["image_sizes"]
+            assert len(pixel_values) == len(image_sizes)
 
-                # Original output: (1, num_images, C, H, W)
-                # New output: (num_images, C, H, W)
-                assert (isinstance(pixel_values, list)
-                        and len(pixel_values) == 1)
-                assert (isinstance(pixel_values[0], list)
-                        and len(pixel_values[0]) == len(images))
-
-                processed_outputs["pixel_values"] = pixel_values[0]
-            else:
-                # Avoid padding since we need the output for each image to be
-                # independent of other images for the cache to work correctly
-                image_sizes = processed_outputs["image_sizes"]
-                assert len(pixel_values) == len(image_sizes)
-
-                processed_outputs["pixel_values"] = [
-                    p[:, :h, :w]
-                    for p, (h, w) in zip(pixel_values, image_sizes)
-                ]
+            processed_outputs["pixel_values"] = [
+                p[:, :h, :w] for p, (h, w) in zip(pixel_values, image_sizes)
+            ]
 
         return processed_outputs
 
@@ -538,18 +521,22 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
             config.projector_hidden_act = "gelu"
 
         # TODO: Optionally initializes this for supporting embeddings.
-        self.vision_tower = init_vision_tower_for_llava(
-            config,
-            quant_config,
-            require_post_norm=False,
-            prefix=maybe_prefix(prefix, "vision_tower"))
-        self.multi_modal_projector = LlavaMultiModalProjector(
-            vision_hidden_size=config.vision_config.hidden_size,
-            text_hidden_size=config.text_config.hidden_size,
-            projector_hidden_act=config.projector_hidden_act,
-            multimodal_projector_bias=config.multimodal_projector_bias,
-            quant_config=quant_config,
-            prefix=maybe_prefix(prefix, "multi_modal_projector"))
+        if multimodal_config.get_limit_per_prompt("image"):
+            self.vision_tower = init_vision_tower_for_llava(
+                config,
+                quant_config,
+                require_post_norm=False,
+                prefix=maybe_prefix(prefix, "vision_tower"))
+            self.multi_modal_projector = LlavaMultiModalProjector(
+                vision_hidden_size=config.vision_config.hidden_size,
+                text_hidden_size=config.text_config.hidden_size,
+                projector_hidden_act=config.projector_hidden_act,
+                multimodal_projector_bias=config.multimodal_projector_bias,
+                quant_config=quant_config,
+                prefix=maybe_prefix(prefix, "multi_modal_projector"))
+        else:
+            self.vision_tower = None
+            self.multi_modal_projector = None
 
         self.language_model = init_vllm_registered_model(
             vllm_config=vllm_config,
@@ -773,7 +760,11 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(self)
+        skip_prefixes = []
+        if self.vision_tower is None and self.multi_modal_projector is None:
+            skip_prefixes.extend(["vision_tower.", "multi_modal_projector."])
+
+        loader = AutoWeightsLoader(self, skip_prefixes=skip_prefixes)
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
 
@@ -784,17 +775,10 @@ class MantisProcessingInfo(LlavaProcessingInfo):
         vision_info = self.get_vision_encoder_info()
 
         kwargs.setdefault("patch_size", vision_info.get_patch_size())
-
-        if Version(TRANSFORMERS_VERSION) < Version("4.48"):
-            # BUG: num_additional_image_tokens = 0 but treated as 1,
-            # so we set vision_feature_select_strategy to None to offset this
-            kwargs.setdefault("vision_feature_select_strategy", None)
-        else:
-            # FIXED: https://github.com/huggingface/transformers/pull/33424/files#diff-6a37acc21efcadaae622b079b2712a131131448ff64262bd219aa346aeec38faL150
-            kwargs.setdefault(
-                "vision_feature_select_strategy",
-                hf_config.vision_feature_select_strategy,
-            )
+        kwargs.setdefault(
+            "vision_feature_select_strategy",
+            hf_config.vision_feature_select_strategy,
+        )
 
         return self.ctx.get_hf_processor(LlavaProcessor, **kwargs)
 
