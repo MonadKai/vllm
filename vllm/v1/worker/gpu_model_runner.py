@@ -931,7 +931,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             batched_mm_inputs = MultiModalKwargs.batch(grouped_mm_inputs)
             batched_mm_inputs = MultiModalKwargs.as_kwargs(
                 batched_mm_inputs,
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
+                dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
                 device=self.device,
             )
 
@@ -1878,7 +1880,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 [dummy_mm_kwargs] * max_num_mm_items)
             batched_dummy_mm_inputs = MultiModalKwargs.as_kwargs(
                 batched_dummy_mm_inputs,
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
+                dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
                 device=self.device,
             )
 
