@@ -15,18 +15,18 @@ COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.
 RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 
 # add vllm parrot audio support
-COPY docker/vllm_patch/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
-COPY docker/vllm_patch/model_executor/model_loader/loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/loader.py
+COPY docker/vllm_patch/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
+COPY docker/vllm_patch/model_executor/model_loader/loader.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/model_loader/loader.py
 
-COPY docker/vllm_patch/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
-COPY docker/vllm_patch/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
-# COPY docker/vllm_patch/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
+COPY docker/vllm_patch/model_executor/models/parrot_audio.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot_audio.py
+COPY docker/vllm_patch/model_executor/models/parrot2_audio.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot2_audio.py
+# COPY docker/vllm_patch/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
 
-COPY docker/vllm_patch/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+COPY docker/vllm_patch/model_executor/models/registry.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py
 
-COPY docker/vllm_patch/entrypoints/chat_utils.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/chat_utils.py
+COPY docker/vllm_patch/entrypoints/chat_utils.py /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/chat_utils.py
 
-COPY docker/vllm_patch/v1/executor/multiproc_executor.py /usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py
+COPY docker/vllm_patch/v1/executor/multiproc_executor.py /usr/local/lib/python3.10/dist-packages/vllm/v1/executor/multiproc_executor.py
 
 
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
