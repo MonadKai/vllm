@@ -450,7 +450,7 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
+        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio", "parrot2_audio_moe"):
             if model_config.dtype == torch.float32:
                 with set_default_torch_dtype(model_config.dtype):
                     with target_device:
