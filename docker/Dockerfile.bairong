@@ -2,6 +2,11 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.8.5.post1
 
 LABEL maintainer="kai.liu <kai.liu@brgroup.com>"
 
+# incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# `torchaudio` already installed in base image
+RUN pip install librosa
+
 # add transformers parrot audio support
 COPY dist/transformers-4.51.3.tar.gz /tmp/transformers-4.51.3.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.51.3.tar.gz --no-deps && rm -rf /tmp/transformers-4.51.3.tar.gz
