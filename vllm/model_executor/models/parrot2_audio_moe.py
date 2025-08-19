@@ -111,12 +111,12 @@ class Parrot2AudioMoeProcessingInfo(BaseProcessingInfo):
         seq_len: int = None,
         mm_counts: Mapping[str, int] = None,
     ) -> Mapping[str, int]:
-        max_output_lengths = 500
-        return {"audio": max_output_lengths}
+        hf_processor = self.get_hf_processor()
+        feature_extractor = hf_processor.feature_extractor
+        return {"audio": feature_extractor.max_feature_length}
 
     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
-        max_output_lengths = 500
-        return {"audio": max_output_lengths}
+        return {"audio": None}
 
 
 class Parrot2AudioMoeDummyInputsBuilder(BaseDummyInputsBuilder[Parrot2AudioMoeProcessingInfo]):
@@ -209,7 +209,6 @@ class Parrot2AudioMoeMultiModalProcessor(
         vocab = tokenizer.get_vocab()
 
         # Use getattr with default to be compatible with transformers<4.48
-        # audio_token = getattr(processor, "audio_token", "<|AUDIO|>")
         audio_token = getattr(processor, "audio_token", "[FAKE_AUDIO]")
         # HINT: audio model use vision token ???
         audio_bos_token = getattr(processor, "audio_bos_token", "<|vision_start|>")
@@ -260,7 +259,7 @@ class Parrot2AudioMoeMultiModalProcessor(
         ]
 
 
-# @support_torch_compile(dynamic_arg_dims={"input_features": [0, 1], "audio_feature_lengths": 0})
+# @support_torch_compile(dynamic_arg_dims={"input_features": 0, "audio_feature_lengths": 0})
 class Parrot2AudioMoeEncoder(nn.Module):
     """
     Transformer encoder consisting of *config.encoder_layers* self attention layers. Each layer is a
@@ -305,7 +304,7 @@ class Parrot2AudioMoeEncoder(nn.Module):
         return xs_pad, olens
 
 
-# @support_torch_compile(dynamic_arg_dims={"audio_features": [0, 1]})
+# @support_torch_compile(dynamic_arg_dims={"audio_features": 0})
 class Parrot2AudioMoeMultiModalProjector(nn.Module):
     def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
