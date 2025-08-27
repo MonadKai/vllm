@@ -169,9 +169,21 @@ class InputProcessingContext(InputContext):
         def maybe_cast_dtype(x):
             # This mimics the behavior of transformers.BatchFeature
             if isinstance(x, torch.Tensor) and x.is_floating_point():
-                # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio, parrot2_audio_moe
-                dtype = self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio", "parrot2_audio_moe") else self.model_config.dtype
-                # dtype=self.model_config.dtype
+                default_dtype = self.model_config.dtype
+                hf_config = self.model_config.hf_config
+                if hasattr(hf_config, "audio_config"):
+                    if hasattr(hf_config.audio_config, "torch_dtype"):
+                        dtype = hf_config.audio_config.torch_dtype
+                    else:
+                        dtype = default_dtype
+                elif hasattr(hf_config, "vision_config"):
+                    if hasattr(hf_config.vision_config, "torch_dtype"):
+                        dtype = hf_config.vision_config.torch_dtype
+                    else:
+                        dtype = default_dtype
+                else:
+                    dtype = default_dtype
+
                 return x.to(dtype=dtype)
             return x
 
