@@ -21,11 +21,10 @@ COPY vllm/model_executor/model_loader/__init__.py /usr/local/lib/python3.12/dist
 COPY vllm/config.py /usr/local/lib/python3.12/dist-packages/vllm/config.py
 COPY vllm/inputs/registry.py /usr/local/lib/python3.12/dist-packages/vllm/inputs/registry.py
 
-# add parrot commons support
+# add vllm parrot audio support
 COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
 RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
 
-# add vllm parrot audio support
 COPY vllm/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
 COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
 COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
