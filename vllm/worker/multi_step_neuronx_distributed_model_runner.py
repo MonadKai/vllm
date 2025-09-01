@@ -10,6 +10,8 @@ from vllm.sequence import IntermediateTensors
 from vllm.worker.neuronx_distributed_model_runner import (
     NeuronxDistributedModelRunner)
 
+from .utils import get_model_dtype_v2
+
 
 class MultiStepNeuronxDistributedModelRunner(NeuronxDistributedModelRunner):
     """A model runner for multi-step decoding using the
@@ -53,7 +55,7 @@ class MultiStepNeuronxDistributedModelRunner(NeuronxDistributedModelRunner):
                 model_input.multi_modal_kwargs or {},
                 # dtype=self.model_config.dtype,
                 # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-                dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             ),
         )
