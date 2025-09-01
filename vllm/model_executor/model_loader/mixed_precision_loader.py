@@ -25,14 +25,10 @@ class MixedPrecisionModelLoader(DefaultModelLoader):
                    model_config: ModelConfig) -> nn.Module:
         """Load a model with the given configurations."""
         device_config = vllm_config.device_config
-        load_config = vllm_config.load_config
-        load_device = device_config.device if load_config.device is None else \
-                      load_config.device
-        target_device = torch.device(load_device)
+        target_device = torch.device(device_config.device)
         with target_device:
-            model = initialize_model(vllm_config=vllm_config, model_config=model_config)
-
-        logger.debug("Loading weights on %s ...", load_device)
+            model = initialize_model(vllm_config=vllm_config,
+                                        model_config=model_config)
         # Quantization does not happen in `load_weights` but after it
         self.load_weights(model, model_config)
         process_weights_after_loading(model, model_config, target_device)
