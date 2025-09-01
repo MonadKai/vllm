@@ -259,10 +259,10 @@ class Parrot2AudioMultiModalProcessor(
 # @support_torch_compile(dynamic_arg_dims={"input_features": 0, "audio_feature_lengths": 0})
 class Parrot2AudioEncoder(nn.Module):
     """
-    Parrot Audio Encoder
+    ParrotSenseVoiceEncoder
 
     Args:
-        config: ParrotAudioEncoderConfig
+        config: ParrotSenseVoiceConfig
     """
 
     # Ignore copy
