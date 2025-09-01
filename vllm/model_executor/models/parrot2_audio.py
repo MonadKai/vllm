@@ -206,7 +206,6 @@ class Parrot2AudioMultiModalProcessor(
         vocab = tokenizer.get_vocab()
 
         # Use getattr with default to be compatible with transformers<4.48
-        # audio_token = getattr(processor, "audio_token", "<|AUDIO|>")
         audio_token = getattr(processor, "audio_token", "[FAKE_AUDIO]")
         # HINT: audio model use vision token ???
         audio_bos_token = getattr(processor, "audio_bos_token", "<|vision_start|>")
@@ -260,11 +259,10 @@ class Parrot2AudioMultiModalProcessor(
 # @support_torch_compile(dynamic_arg_dims={"input_features": [0, 1], "audio_feature_lengths": 0})
 class Parrot2AudioEncoder(nn.Module):
     """
-    Transformer encoder consisting of *config.encoder_layers* self attention layers. Each layer is a
-    [`ParrotAudioEncoderLayer`].
+    ParrotSenseVoiceEncoder
 
     Args:
-        config: ParrotAudioEncoderConfig
+        config: ParrotSenseVoiceConfig
     """
 
     # Ignore copy
@@ -346,7 +344,6 @@ class Parrot2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
         self.config = config
         self.multimodal_config = multimodal_config
 
-        # HINT: audio_encoder raw dtype is float32
         self.audio_tower_dtype = config.audio_config.torch_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
             if os.environ.get("VLLM_USE_TRANSFORMERS_AUDIO_ENCODER", "0") == "1":
@@ -356,7 +353,6 @@ class Parrot2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
                 self.audio_tower.forward = torch.compile(self.audio_tower.forward)
 
-        # HINT: multi_modal_projector raw dtype is float32
         self.multi_modal_projector_dtype = self.audio_tower_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
             if (
@@ -399,20 +395,6 @@ class Parrot2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             raise ValueError(f"Incorrect type of {name}. Got type: {type(mm_input)}")
         if isinstance(mm_input, torch.Tensor):
             return torch.concat(list(mm_input))
-        # HINT: branch that never hit
-        elif isinstance(mm_input[0], list):
-            if mm_input[0][0].dtype == torch.float:
-                pad_value = 0.0
-            elif mm_input[0][0].dtype == torch.bool:
-                pad_value = False
-            elif mm_input[0][0].dtype == torch.int:
-                pad_value = 0
-            return pad_sequence(
-                mm_input[0],
-                batch_first=True,
-                padding_side="right",
-                padding_value=pad_value,
-            )
         else:
             return torch.concat(mm_input)
 
@@ -448,12 +430,15 @@ class Parrot2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             feature_attention_mask.sum(-1)
         )
 
-        # HINT: compute in float32 dtype
+        input_features = input_features.to(self.audio_tower_dtype)
+
         audio_outputs = self.audio_tower(
             input_features, audio_feature_lengths=audio_feat_lengths
         )
         selected_audio_feature = audio_outputs[0]
-        # HINT: compute in float32 dtype
+
+        selected_audio_feature = selected_audio_feature.to(self.multi_modal_projector_dtype)
+
         audio_features = self.multi_modal_projector(selected_audio_feature)
         num_audios, max_audio_tokens, embed_dim = audio_features.shape
         audio_output_lengths = audio_output_lengths.unsqueeze(1)
