@@ -34,6 +34,8 @@ from vllm.worker.model_runner_base import (
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
 
+from .utils import get_model_dtype_v2
+
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
@@ -564,8 +566,8 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPUWithSamplingMetadata]):
                 intermediate_tensors=intermediate_tensors,
                 **MultiModalKwargs.as_kwargs(
                     model_input.multi_modal_kwargs or {},
-                    # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-                    dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
+                    # dtype=self.model_config.dtype,
+                    dtype=get_model_dtype_v2(self.model_config),
                     device=self.device,
                 ),
             )

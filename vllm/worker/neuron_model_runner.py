@@ -20,6 +20,8 @@ from vllm.sequence import IntermediateTensors, SequenceGroupMetadata
 from vllm.utils import is_pin_memory_available, make_tensor_with_pad
 from vllm.worker.model_runner_base import ModelRunnerBase, ModelRunnerInputBase
 
+from .utils import get_model_dtype_v2
+
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
@@ -380,8 +382,8 @@ class NeuronModelRunner(ModelRunnerBase[ModelInputForNeuron]):
                 sampling_params=sampling_params,
                 **MultiModalKwargs.as_kwargs(
                     model_input.multi_modal_kwargs or {},
-                    # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-                    dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
+                    # dtype=self.model_config.dtype,
+                    dtype=get_model_dtype_v2(self.model_config),
                     device=self.device,
                 ),
             )
@@ -394,8 +396,8 @@ class NeuronModelRunner(ModelRunnerBase[ModelInputForNeuron]):
                 input_block_ids=model_input.input_block_ids,
                 **MultiModalKwargs.as_kwargs(
                     model_input.multi_modal_kwargs or {},
-                    # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-                    dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
+                    # dtype=self.model_config.dtype,
+                    dtype=get_model_dtype_v2(self.model_config),
                     device=self.device,
                 ),
             )

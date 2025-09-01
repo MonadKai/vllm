@@ -42,6 +42,7 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
 from .utils import sanity_check_mm_encoder_outputs
+from .utils import get_model_dtype_v2
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -654,9 +655,8 @@ class TPUModelRunner(LoRAModelRunnerMixin):
             batched_mm_inputs = MultiModalKwargs.batch(grouped_mm_inputs)
             batched_mm_inputs = MultiModalKwargs.as_kwargs(
                 batched_mm_inputs,
-                # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-                dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
                 # dtype=self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             )
 
@@ -1442,9 +1442,8 @@ class TPUModelRunner(LoRAModelRunnerMixin):
                                                          batch_size)
         return MultiModalKwargs.as_kwargs(
             batched_dummy_mm_inputs,
-            # HINT: use audio_tower's dtype for parrot_audio and parrot2_audio
-            dtype=self.model_config.hf_config.audio_config.torch_dtype if self.model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio") else self.model_config.dtype,
             # dtype=self.model_config.dtype,
+            dtype=get_model_dtype_v2(self.model_config),
             device=self.device,
         )
 
