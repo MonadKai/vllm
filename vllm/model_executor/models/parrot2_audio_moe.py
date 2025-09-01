@@ -21,7 +21,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Inference-only Parrot-Audio model compatible with HuggingFace weights."""
+"""Inference-only Parrot2-Audio-Moe model compatible with HuggingFace weights."""
 
 import os
 from collections.abc import Iterable, Mapping, Sequence
@@ -31,12 +31,15 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BatchFeature
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceFeatureExtractor as ParrotAudioFeatureExtractor
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceProcessor as ParrotAudioProcessor
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceEncoder as TransformersParrotAudioEncoder
-from transformers.models.parrot_audio import ParrotAudioConfig
-from transformers.models.parrot_audio import (
-    ParrotAudioMultiModalProjector as TransformersParrotAudioMultiModalProjector
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceEncoder as TransformersParrot2AudioMoeEncoder
+from transformers.models.parrot_sensevoice import ParrotSenseVoiceFeatureExtractor as Parrot2AudioMoeFeatureExtractor
+# from transformers.models.parrot_sensevoice import ParrotSenseVoiceProcessor as Parrot2AudioMoeProcessor
+from transformers.models.parrot2_audio_moe import (
+    Parrot2AudioMoeConfig,
+    Parrot2AudioMoeProcessor,
+)
+from transformers.models.parrot2_audio_moe import (
+    Parrot2AudioMoeMultiModalProjector as TransformersParrot2AudioMoeMultiModalProjector,
 )
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
@@ -45,7 +48,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     SupportsPP,
 )
-from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM
+from vllm.model_executor.models.qwen3 import Qwen3MoeForCausalLM
 from vllm.model_executor.models.utils import (
     AutoWeightsLoader,
     init_vllm_registered_model,
@@ -80,9 +83,9 @@ from parrot_commons.multi_modal_projector import LinearAdaptor
 from parrot_commons.sense_voice_small import SenseVoiceEncoderSmall
 
 
-class ParrotAudioProcessingInfo(BaseProcessingInfo):
+class Parrot2AudioMoeProcessingInfo(BaseProcessingInfo):
     def get_hf_config(self):
-        return self.ctx.get_hf_config(ParrotAudioConfig)
+        return self.ctx.get_hf_config(Parrot2AudioMoeConfig)
 
     def get_hf_processor(
         self,
@@ -90,18 +93,18 @@ class ParrotAudioProcessingInfo(BaseProcessingInfo):
         # Ignored in initialization
         sampling_rate: Optional[int] = None,
         **kwargs: object,
-    ) -> ParrotAudioProcessor:
-        return self.ctx.get_hf_processor(ParrotAudioProcessor, **kwargs)
+    ) -> Parrot2AudioMoeProcessor:
+        return self.ctx.get_hf_processor(Parrot2AudioMoeProcessor, **kwargs)
 
     def get_feature_extractor(
         self,
         *,
         # Ignored in initialization
         sampling_rate: Optional[int] = None,
-    ) -> ParrotAudioFeatureExtractor:
+    ) -> Parrot2AudioMoeFeatureExtractor:
         hf_processor = self.get_hf_processor(sampling_rate=sampling_rate)
         feature_extractor = hf_processor.feature_extractor  # type: ignore
-        assert isinstance(feature_extractor, ParrotAudioFeatureExtractor)
+        assert isinstance(feature_extractor, Parrot2AudioMoeFeatureExtractor)
         return feature_extractor
 
     def get_mm_max_tokens_per_item(
@@ -117,7 +120,7 @@ class ParrotAudioProcessingInfo(BaseProcessingInfo):
         return {"audio": None}
 
 
-class ParrotAudioDummyInputsBuilder(BaseDummyInputsBuilder[ParrotAudioProcessingInfo]):
+class Parrot2AudioMoeDummyInputsBuilder(BaseDummyInputsBuilder[Parrot2AudioMoeProcessingInfo]):
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         num_audios = mm_counts.get("audio", 0)
 
@@ -144,8 +147,8 @@ class ParrotAudioDummyInputsBuilder(BaseDummyInputsBuilder[ParrotAudioProcessing
         }
 
 
-class ParrotAudioMultiModalProcessor(
-    BaseMultiModalProcessor[ParrotAudioProcessingInfo]
+class Parrot2AudioMoeMultiModalProcessor(
+    BaseMultiModalProcessor[Parrot2AudioMoeProcessingInfo]
 ):
     def _get_data_parser(self) -> MultiModalDataParser:
         feature_extractor = self.info.get_feature_extractor()
@@ -256,7 +259,7 @@ class ParrotAudioMultiModalProcessor(
 
 
 # @support_torch_compile(dynamic_arg_dims={"input_features": 0, "audio_feature_lengths": 0})
-class ParrotAudioEncoder(nn.Module):
+class Parrot2AudioMoeEncoder(nn.Module):
     """
     ParrotSenseVoiceEncoder
 
@@ -300,7 +303,7 @@ class ParrotAudioEncoder(nn.Module):
 
 
 # @support_torch_compile(dynamic_arg_dims={"audio_features": [0, 1]})
-class ParrotAudioMultiModalProjector(nn.Module):
+class Parrot2AudioMoeMultiModalProjector(nn.Module):
     def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
@@ -319,11 +322,11 @@ class ParrotAudioMultiModalProjector(nn.Module):
 
 
 @MULTIMODAL_REGISTRY.register_processor(
-    ParrotAudioMultiModalProcessor,
-    info=ParrotAudioProcessingInfo,
-    dummy_inputs=ParrotAudioDummyInputsBuilder,
+    Parrot2AudioMoeMultiModalProcessor,
+    info=Parrot2AudioMoeProcessingInfo,
+    dummy_inputs=Parrot2AudioMoeDummyInputsBuilder,
 )
-class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
+class Parrot2AudioMoeForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         # HINT: parrot_audio is a mixed precision model
@@ -335,28 +338,26 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         self.config = config
         self.multimodal_config = multimodal_config
 
-        # HINT: audio_encoder raw dtype is float32
         self.audio_tower_dtype = config.audio_config.torch_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
             if os.environ.get("VLLM_USE_TRANSFORMERS_AUDIO_ENCODER", "0") == "1":
-                self.audio_tower = TransformersParrotAudioEncoder(config.audio_config)
+                self.audio_tower = TransformersParrot2AudioMoeEncoder(config.audio_config)
             else:
-                self.audio_tower = ParrotAudioEncoder(vllm_config=vllm_config)
+                self.audio_tower = Parrot2AudioMoeEncoder(vllm_config=vllm_config)
             if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
                 self.audio_tower.forward = torch.compile(self.audio_tower.forward)
 
-        # HINT: multi_modal_projector raw dtype is float32
         self.multi_modal_projector_dtype = self.audio_tower_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
             if (
                 os.environ.get("VLLM_USE_TRANSFORMERS_MULTI_MODAL_PROJECTOR", "0")
                 == "1"
             ):
-                self.multi_modal_projector = TransformersParrotAudioMultiModalProjector(
+                self.multi_modal_projector = TransformersParrot2AudioMoeMultiModalProjector(
                     config
                 )
             else:
-                self.multi_modal_projector = ParrotAudioMultiModalProjector(
+                self.multi_modal_projector = Parrot2AudioMoeMultiModalProjector(
                     vllm_config=vllm_config
                 )
             if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
@@ -374,7 +375,7 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
                 vllm_config=vllm_config,
                 hf_config=config.text_config,
                 prefix=maybe_prefix(prefix, "language_model"),
-                architectures=["Qwen2ForCausalLM"],
+                architectures=["Qwen3MoeForCausalLM"],
             )
 
         self.make_empty_intermediate_tensors = (

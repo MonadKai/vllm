@@ -1642,6 +1642,7 @@ class LoadFormat(str, enum.Enum):
     RUNAI_STREAMER = "runai_streamer"
     RUNAI_STREAMER_SHARDED = "runai_streamer_sharded"
     FASTSAFETENSORS = "fastsafetensors"
+    MIXED_PRECISION = "mixed_precision"
 
 
 @config
