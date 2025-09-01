@@ -1,7 +1,5 @@
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.8.5.post1
 
-LABEL maintainer="kai.liu <kai.liu@brgroup.com>"
-
 # incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # `torchaudio` already installed in base image
@@ -16,22 +14,23 @@ COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
 RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
 
 # add vllm kubernetes plugin support
-COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
-RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# add mixed precision support
+COPY vllm/model_executor/model_loader/mixed_precision_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
+COPY vllm/config.py /usr/local/lib/python3.12/dist-packages/vllm/config.py
 
 # add vllm parrot audio support
-COPY vllm/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
-COPY vllm/model_executor/model_loader/base_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/base_loader.py
-
 COPY vllm/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
 COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
 # COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
-
 COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
 
 COPY vllm/entrypoints/chat_utils.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/chat_utils.py
 
+# increase timeout
 COPY vllm/v1/executor/multiproc_executor.py /usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py
 
 
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+ENTRYPOINT ["vllm", "serve"]
