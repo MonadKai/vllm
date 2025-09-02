@@ -5,8 +5,8 @@ import asyncio
 import copy
 import pickle
 from contextlib import contextmanager, suppress
-from typing import (Any, AsyncGenerator, Dict, Iterator, List, Mapping,
-                    Optional, Union, cast)
+from typing import (Any, AsyncGenerator, Dict, Iterable, Iterator, List,
+                    Mapping, Optional, Union, cast)
 
 import cloudpickle
 import psutil
@@ -20,8 +20,6 @@ from vllm.config import DecodingConfig, ModelConfig, VllmConfig
 from vllm.core.scheduler import SchedulerOutputs
 # yapf conflicts with isort for this block
 # yapf: disable
-from vllm.engine.async_llm_engine import (
-    build_guided_decoding_logits_processor_async)
 from vllm.engine.multiprocessing import (ENGINE_DEAD_ERROR, IPC_DATA_EXT,
                                          IPC_HEALTH_EXT, IPC_INPUT_EXT,
                                          IPC_OUTPUT_EXT, RPC_REQUEST_T,
@@ -97,11 +95,16 @@ class MQLLMEngineClient(EngineClient):
         self.model_config = engine_config.model_config
         self.decoding_config = engine_config.decoding_config
 
-        # Create the tokenizer group.
-        self.tokenizer = init_tokenizer_from_configs(
-            model_config=self.model_config,
-            scheduler_config=engine_config.scheduler_config,
-            lora_config=engine_config.lora_config)
+        if self.vllm_config.model_config.skip_tokenizer_init:
+            self.tokenizer = None
+
+        else:
+            # Create the tokenizer group.
+            self.tokenizer = init_tokenizer_from_configs(
+                model_config=self.model_config,
+                scheduler_config=engine_config.scheduler_config,
+                lora_config=engine_config.lora_config)
+
         self.input_preprocessor = InputPreprocessor(self.model_config,
                                                     self.tokenizer)
 
@@ -375,7 +378,10 @@ class MQLLMEngineClient(EngineClient):
         return self.input_preprocessor
 
     async def get_tokenizer(self, lora_request: Optional[LoRARequest] = None):
-        return await self.tokenizer.get_lora_tokenizer_async(lora_request)
+        if self.tokenizer is None:
+            return None
+        else:
+            return await self.tokenizer.get_lora_tokenizer_async(lora_request)
 
     async def get_vllm_config(self) -> VllmConfig:
         return self.vllm_config
@@ -398,8 +404,12 @@ class MQLLMEngineClient(EngineClient):
             error_message="Unable to start RPC Server",
             socket=socket)
 
-    async def abort(self, request_id: str):
+    async def abort(self, request_id: Union[str, Iterable[str]]):
         """Send an ABORT_REQUEST signal to the RPC Server"""
+
+        if not isinstance(request_id, str):
+            raise RuntimeError("Only single-request abort supported in"
+                               " deprecated V0")
 
         with suppress(MQClientClosedError):
             await self._send_one_way_rpc_request(
@@ -528,22 +538,6 @@ class MQLLMEngineClient(EngineClient):
         # Ensure the request id is unique among running requests
         if request_id in self.output_queues:
             raise ValueError(f"Request {request_id} already exists")
-
-        # Constructing guided decoding logits processors is expensive, so we do
-        # it here to avoid contending with cpu resources and the GIL on the
-        # backend process.
-        if isinstance(params, SamplingParams) and \
-            params.guided_decoding is not None:
-            params = await \
-                build_guided_decoding_logits_processor_async(
-                    sampling_params=params,
-                    tokenizer=await self.get_tokenizer(lora_request),
-                    default_guided_backend=(self.decoding_config.backend
-                        if self.decoding_config
-                        else DecodingConfig.backend),
-                    model_config=self.model_config,
-                    reasoning_backend=self.decoding_config.reasoning_backend,
-                )
 
         # 1) Create output queue for this requests.
         queue: asyncio.Queue[Union[RequestOutput,
