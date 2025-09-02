@@ -1,0 +1,36 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.8.5.post1
+
+# incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# `torchaudio` already installed in base image
+RUN pip install librosa
+
+# add transformers parrot audio support
+COPY dist/transformers-4.51.3.tar.gz /tmp/transformers-4.51.3.tar.gz
+RUN pip uninstall transformers -y && pip install /tmp/transformers-4.51.3.tar.gz --no-deps && rm -rf /tmp/transformers-4.51.3.tar.gz
+
+# add parrot commons support
+COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
+RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
+
+# add vllm kubernetes plugin support
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# add mixed precision support
+COPY vllm/model_executor/model_loader/mixed_precision_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
+COPY vllm/config.py /usr/local/lib/python3.12/dist-packages/vllm/config.py
+
+# add vllm parrot audio support
+COPY vllm/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
+COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
+# COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
+COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+
+COPY vllm/entrypoints/chat_utils.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/chat_utils.py
+
+# increase timeout
+COPY vllm/v1/executor/multiproc_executor.py /usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py
+
+
+ENTRYPOINT ["vllm", "serve"]
