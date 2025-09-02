@@ -21,7 +21,7 @@ RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tm
 
 # add vllm parrot audio support
 COPY vllm/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
-COPY vllm/model_executor/model_loader/base_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/base_loader.py
+COPY vllm/model_executor/model_loader/loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/loader.py
 
 COPY vllm/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
 COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
