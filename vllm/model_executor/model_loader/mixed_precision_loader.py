@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from vllm.config import LoadConfig, ModelConfig, VllmConfig
+from vllm.config import ModelConfig, VllmConfig
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
 from vllm.model_executor.model_loader.utils import (
@@ -25,10 +25,10 @@ class MixedPrecisionModelLoader(DefaultModelLoader):
             model = initialize_model(vllm_config=vllm_config,
                                         model_config=model_config)
 
-            logger.debug("Loading weights on %s ...", load_device)
-            # Quantization does not happen in `load_weights` but after it
-            self.load_weights(model, model_config)
-            process_weights_after_loading(model, model_config, target_device)
+        logger.debug("Loading weights on %s ...", load_device)
+        # Quantization does not happen in `load_weights` but after it
+        self.load_weights(model, model_config)
+        process_weights_after_loading(model, model_config, target_device)
         return model.eval()
 
 
