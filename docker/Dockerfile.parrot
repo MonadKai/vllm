@@ -8,6 +8,9 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.1.1
 # COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 # RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 
+# add audio support
+RUN pip install librosa==0.11.0
+
 # add transformers parrot audio support
 COPY dist/transformers-4.55.2.tar.gz /tmp/transformers-4.55.2.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.55.2.tar.gz --no-deps && rm -rf /tmp/transformers-4.55.2.tar.gz
