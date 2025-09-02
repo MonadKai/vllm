@@ -12,6 +12,8 @@ from vllm.sequence import IntermediateTensors
 from vllm.worker.neuron_model_runner import (ModelInputForNeuron,
                                              NeuronModelRunner)
 
+from .utils import get_model_dtype_v2
+
 
 class MultiStepNeuronModelRunner(NeuronModelRunner):
     """A model runner for multi step decoding using the transformers_neuronx
@@ -72,7 +74,8 @@ class MultiStepNeuronModelRunner(NeuronModelRunner):
             input_block_ids=model_input.input_block_ids,
             **MultiModalKwargs.as_kwargs(
                 model_input.multi_modal_kwargs or {},
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             ),
         )

@@ -59,6 +59,7 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
 from .utils import (gather_mm_placeholders, sanity_check_mm_encoder_outputs,
                     scatter_mm_placeholders)
+from .utils import get_model_dtype_v2
 
 if TYPE_CHECKING:
     import xgrammar as xgr
@@ -931,7 +932,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             batched_mm_inputs = MultiModalKwargs.batch(grouped_mm_inputs)
             batched_mm_inputs = MultiModalKwargs.as_kwargs(
                 batched_mm_inputs,
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             )
 
@@ -1878,7 +1880,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 [dummy_mm_kwargs] * max_num_mm_items)
             batched_dummy_mm_inputs = MultiModalKwargs.as_kwargs(
                 batched_dummy_mm_inputs,
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             )
 

@@ -3,6 +3,7 @@
 Worker-related helper functions.
 '''
 
+import torch
 from vllm.utils import STR_NOT_IMPL_ENC_DEC_ERR_STRS
 from vllm.worker.model_runner import GPUModelRunnerBase
 
@@ -50,3 +51,27 @@ def assert_enc_dec_mr_supported_scenario(
     if enc_dec_mr.prompt_adapter_config is not None:
         raise NotImplementedError(STR_NOT_IMPL_ENC_DEC_ERR_STRS[
             'STR_NOT_IMPL_ENC_DEC_PROMPT_ADAPTER'])
+
+
+def get_model_dtype_v1(model_config) -> torch.dtype:
+    if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio", "parrot2_audio_moe"):
+        return model_config.hf_config.audio_config.torch_dtype
+    return model_config.dtype
+
+
+def get_model_dtype_v2(model_config) -> torch.dtype:
+    default_dtype = model_config.dtype
+    hf_config = model_config.hf_config
+    if hasattr(hf_config, "audio_config"):
+        if hasattr(hf_config.audio_config, "torch_dtype"):
+            dtype = hf_config.audio_config.torch_dtype
+        else:
+            dtype = default_dtype
+    elif hasattr(hf_config, "vision_config"):
+        if hasattr(hf_config.vision_config, "torch_dtype"):
+            dtype = hf_config.vision_config.torch_dtype
+        else:
+            dtype = default_dtype
+    else:
+        dtype = default_dtype
+    return dtype

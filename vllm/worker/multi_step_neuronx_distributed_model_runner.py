@@ -10,6 +10,8 @@ from vllm.sequence import IntermediateTensors
 from vllm.worker.neuronx_distributed_model_runner import (
     NeuronxDistributedModelRunner)
 
+from .utils import get_model_dtype_v2
+
 
 class MultiStepNeuronxDistributedModelRunner(NeuronxDistributedModelRunner):
     """A model runner for multi-step decoding using the
@@ -51,7 +53,8 @@ class MultiStepNeuronxDistributedModelRunner(NeuronxDistributedModelRunner):
             sampling_params=sampling_params,
             **MultiModalKwargs.as_kwargs(
                 model_input.multi_modal_kwargs or {},
-                dtype=self.model_config.dtype,
+                # dtype=self.model_config.dtype,
+                dtype=get_model_dtype_v2(self.model_config),
                 device=self.device,
             ),
         )

@@ -72,3 +72,27 @@ def gather_mm_placeholders(
         return placeholders
 
     return placeholders[is_embed]
+
+
+def get_model_dtype_v1(model_config) -> torch.dtype:
+    if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio", "parrot2_audio_moe"):
+        return model_config.hf_config.audio_config.torch_dtype
+    return model_config.dtype
+
+
+def get_model_dtype_v2(model_config) -> torch.dtype:
+    default_dtype = model_config.dtype
+    hf_config = model_config.hf_config
+    if hasattr(hf_config, "audio_config"):
+        if hasattr(hf_config.audio_config, "torch_dtype"):
+            dtype = hf_config.audio_config.torch_dtype
+        else:
+            dtype = default_dtype
+    elif hasattr(hf_config, "vision_config"):
+        if hasattr(hf_config.vision_config, "torch_dtype"):
+            dtype = hf_config.vision_config.torch_dtype
+        else:
+            dtype = default_dtype
+    else:
+        dtype = default_dtype
+    return dtype
