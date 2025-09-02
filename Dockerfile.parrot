@@ -18,7 +18,7 @@ RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot
 # RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 
 # add mixed precision support
-COPY vllm/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
+COPY vllm/config.py /usr/local/lib/python3.12/dist-packages/vllm/config.py
 COPY vllm/model_executor/model_loader/loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/loader.py
 
 # add vllm parrot audio support
