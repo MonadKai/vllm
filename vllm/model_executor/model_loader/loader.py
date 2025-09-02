@@ -59,6 +59,9 @@ from vllm.transformers_utils.utils import is_s3
 from vllm.utils import is_pin_memory_available
 
 
+logger = init_logger(__name__)
+
+
 @contextmanager
 def device_loading_context(module: torch.nn.Module,
                            target_device: torch.device):
@@ -405,19 +408,19 @@ class DefaultModelLoader(BaseModelLoader):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)
 
-            weights_to_load = {name for name, _ in model.named_parameters()}
-            loaded_weights = model.load_weights(
-                self._get_all_weights(model_config, model))
-            # We only enable strict check for non-quantized models
-            # that have loaded weights tracking currently.
-            if model_config.quantization is None and loaded_weights is not None:
-                weights_not_loaded = weights_to_load - loaded_weights
-                if weights_not_loaded:
-                    raise ValueError(
-                        "Following weights were not initialized from "
-                        f"checkpoint: {weights_not_loaded}")
+        weights_to_load = {name for name, _ in model.named_parameters()}
+        loaded_weights = model.load_weights(
+            self._get_all_weights(model_config, model))
+        # We only enable strict check for non-quantized models
+        # that have loaded weights tracking currently.
+        if model_config.quantization is None and loaded_weights is not None:
+            weights_not_loaded = weights_to_load - loaded_weights
+            if weights_not_loaded:
+                raise ValueError(
+                    "Following weights were not initialized from "
+                    f"checkpoint: {weights_not_loaded}")
 
-            _process_weights_after_loading(model, model_config, target_device)
+        _process_weights_after_loading(model, model_config, target_device)
 
         return model.eval()
 
@@ -1381,15 +1384,60 @@ class RunaiModelStreamerLoader(BaseModelLoader):
             with target_device:
                 model = _initialize_model(vllm_config=vllm_config)
 
-            model_weights = model_config.model
-            if hasattr(model_config, "model_weights"):
-                model_weights = model_config.model_weights
-            model.load_weights(
-                self._get_weights_iterator(model_weights,
-                                           model_config.revision))
+        model_weights = model_config.model
+        if hasattr(model_config, "model_weights"):
+            model_weights = model_config.model_weights
+        model.load_weights(
+            self._get_weights_iterator(model_weights,
+                                        model_config.revision))
 
-            _process_weights_after_loading(model, model_config, target_device)
+        _process_weights_after_loading(model, model_config, target_device)
         return model.eval()
+
+
+class MixedPrecisionModelLoader(DefaultModelLoader):
+    def load_model(self, vllm_config: VllmConfig) -> nn.Module:
+        device_config = vllm_config.device_config
+        model_config = vllm_config.model_config
+        target_device = torch.device(device_config.device)
+        with target_device:
+            model = _initialize_model(vllm_config=vllm_config)
+
+        weights_to_load = {name for name, _ in model.named_parameters()}
+        loaded_weights = model.load_weights(
+            self._get_all_weights(model_config, model)
+        )
+        # We only enable strict check for non-quantized models
+        # that have loaded weights tracking currently.
+        if model_config.quantization is None and loaded_weights is not None:
+            weights_not_loaded = weights_to_load - loaded_weights
+            if weights_not_loaded:
+                raise ValueError(
+                    "Following weights were not initialized from "
+                    f"checkpoint: {weights_not_loaded}"
+                )
+
+        _process_weights_after_loading(model, model_config, target_device)
+
+        return model.eval()
+
+    def _prepare_weights(
+        self,
+        model_name_or_path: str,
+        revision: Optional[str],
+        fall_back_to_pt: bool,
+        allow_patterns_overrides: Optional[list[str]],
+    ) -> Tuple[str, List[str], bool]:
+        self.load_config.load_format = LoadFormat.AUTO
+        res = super()._prepare_weights(
+            model_name_or_path,
+            revision,
+            fall_back_to_pt,
+            allow_patterns_overrides,
+        )
+        self.load_config.load_format = LoadFormat.MIXED_PRECISION
+        return res
+
 
 
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
@@ -1415,5 +1463,8 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
 
     if load_config.load_format == LoadFormat.RUNAI_STREAMER:
         return RunaiModelStreamerLoader(load_config)
+
+    if load_config.load_format == LoadFormat.MIXED_PRECISION:
+        return MixedPrecisionModelLoader(load_config)
 
     return DefaultModelLoader(load_config)
