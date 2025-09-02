@@ -1,12 +1,15 @@
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.9.0
 
 # add vllm tei plugin support
-COPY dist/vllm_tei_plugin-0.9.0.tar.gz /tmp/vllm_tei_plugin-0.9.0.tar.gz
-RUN pip install /tmp/vllm_tei_plugin-0.9.0.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.9.0.tar.gz
+# COPY dist/vllm_tei_plugin-0.9.0.tar.gz /tmp/vllm_tei_plugin-0.9.0.tar.gz
+# RUN pip install /tmp/vllm_tei_plugin-0.9.0.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.9.0.tar.gz
 
 # add vllm kubernetes plugin support
 # COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 # RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# `torchaudio` already installed in base image
+RUN pip install librosa==0.11.0
 
 # add transformers parrot audio support
 COPY dist/transformers-4.52.3.tar.gz /tmp/transformers-4.52.3.tar.gz
