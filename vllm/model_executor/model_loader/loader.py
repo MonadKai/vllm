@@ -58,11 +58,6 @@ from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from vllm.utils import is_pin_memory_available
 
-from .mixed_precision_utils import (
-    cast_language_model_precision,
-    ensure_model_precision,
-)
-
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -385,21 +380,9 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        if model_config.hf_config.model_type in ("parrot_audio", "parrot2_audio"):
-            if model_config.dtype == torch.float32:
-                with set_default_torch_dtype(model_config.dtype):
-                    with target_device:
-                        model = _initialize_model(vllm_config=vllm_config)
-                logger.warning("Casting language_model to bfloat16")
-                cast_language_model_precision(model, torch.bfloat16)
-            else:
-                with target_device:
-                    model = _initialize_model(vllm_config=vllm_config)
-                ensure_model_precision(model_config, model)
-        else:
-            with set_default_torch_dtype(model_config.dtype):
-                with target_device:
-                    model = _initialize_model(vllm_config=vllm_config)
+        with set_default_torch_dtype(model_config.dtype):
+            with target_device:
+                model = _initialize_model(vllm_config=vllm_config)
 
         weights_to_load = {name for name, _ in model.named_parameters()}
         loaded_weights = model.load_weights(
@@ -1433,6 +1416,64 @@ class RunaiModelStreamerLoader(BaseModelLoader):
         return model.eval()
 
 
+class MixedPrecisionModelLoader(DefaultModelLoader):
+    def load_model(self, vllm_config: VllmConfig) -> nn.Module:
+        device_config = vllm_config.device_config
+        model_config = vllm_config.model_config
+        target_device = torch.device(device_config.device)
+        with target_device:
+            model = _initialize_model(vllm_config=vllm_config)
+
+        weights_to_load = {name for name, _ in model.named_parameters()}
+        loaded_weights = model.load_weights(
+            self._get_all_weights(model_config, model))
+        # We only enable strict check for non-quantized models
+        # that have loaded weights tracking currently.
+        if model_config.quantization is None and loaded_weights is not None:
+            weights_not_loaded = weights_to_load - loaded_weights
+            if weights_not_loaded:
+                raise ValueError(
+                    "Following weights were not initialized from "
+                    f"checkpoint: {weights_not_loaded}")
+
+        for _, module in model.named_modules():
+            quant_method = getattr(module, "quant_method", None)
+            if isinstance(quant_method, QuantizeMethodBase):
+                # When quant methods need to process weights after loading
+                # (for repacking, quantizing, etc), they expect parameters
+                # to be on the global target device. This scope is for the
+                # case where cpu offloading is used, where we will move the
+                # parameters onto device for processing and back off after.
+                with device_loading_context(module, target_device):
+                    quant_method.process_weights_after_loading(module)
+            if isinstance(module, Attention) and \
+                hasattr(module, "process_weights_after_loading"):
+                # When attention modules need to process weights after
+                # currently only used by MLA
+                # TODO(lucas): see if there is a way to unify the signatures
+                # of process_weights_after_loading
+                module.process_weights_after_loading(model_config.dtype)
+        return model.eval()
+
+
+    def _prepare_weights(
+        self,
+        model_name_or_path: str,
+        revision: Optional[str],
+        fall_back_to_pt: bool,
+        allow_patterns_overrides: Optional[list[str]],
+    ) -> Tuple[str, List[str], bool]:
+        self.load_config.load_format = LoadFormat.AUTO
+        res = super()._prepare_weights(
+            model_name_or_path,
+            revision,
+            fall_back_to_pt,
+            allow_patterns_overrides,
+        )
+        self.load_config.load_format = LoadFormat.MIXED_PRECISION
+        return res
+
+
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
     """Get a model loader based on the load format."""
 
@@ -1456,5 +1497,8 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
 
     if load_config.load_format == LoadFormat.RUNAI_STREAMER:
         return RunaiModelStreamerLoader(load_config)
+    
+    if load_config.load_format == LoadFormat.MIXED_PRECISION:
+        return MixedPrecisionModelLoader(load_config)
 
     return DefaultModelLoader(load_config)
