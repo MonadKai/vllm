@@ -1,19 +1,22 @@
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.9.1
 
 # add vllm tei plugin support
-COPY dist/vllm_tei_plugin-0.9.1.tar.gz /tmp/vllm_tei_plugin-0.9.1.tar.gz
-RUN pip install /tmp/vllm_tei_plugin-0.9.1.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.9.1.tar.gz
+# COPY dist/vllm_tei_plugin-0.9.1.tar.gz /tmp/vllm_tei_plugin-0.9.1.tar.gz
+# RUN pip install /tmp/vllm_tei_plugin-0.9.1.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.9.1.tar.gz
 
 # add vllm kubernetes plugin support
 # COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 # RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# `torchaudio` already installed in base image
+RUN pip install librosa==0.11.0
 
 # add transformers parrot audio support
 COPY dist/transformers-4.52.4.tar.gz /tmp/transformers-4.52.4.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.52.4.tar.gz --no-deps && rm -rf /tmp/transformers-4.52.4.tar.gz
 
 # fix vllm torchaudio issue
-RUN pip install torchaudio==2.7.0 -f https://download.pytorch.org/whl/cu128 && pip install librosa==0.11.0
+RUN pip install torchaudio==2.7.0 -f https://download.pytorch.org/whl/cu128
 
 # add vllm mixed precision model loader
 COPY vllm/model_executor/model_loader/mixed_precision_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
