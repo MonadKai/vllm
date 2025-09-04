@@ -75,7 +75,8 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               TranslationRequest,
                                               TranslationResponse,
                                               UnloadLoRAAdapterRequest)
-from vllm.entrypoints.tei.protocol import EmbedRequest, RerankRequest
+from vllm.entrypoints.tei.protocol import EmbedRequest as TeiEmbedRequest
+from vllm.entrypoints.tei.protocol import RerankRequest as TeiRerankRequest
 # yapf: enable
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_classification import (
@@ -1107,7 +1108,7 @@ async def is_scaling_elastic_ep(raw_request: Request):
 )
 @with_cancellation
 @load_aware_call
-async def embed(request: EmbedRequest, raw_request: Request):
+async def tei_router_embed(request: TeiEmbedRequest, raw_request: Request):
     handler = tei_embed(raw_request)
     if handler is None:
         return base(raw_request).create_error_response(
@@ -1131,7 +1132,7 @@ async def embed(request: EmbedRequest, raw_request: Request):
 )
 @with_cancellation
 @load_aware_call
-async def rerank(request: RerankRequest, raw_request: Request):
+async def tei_router_rerank(request: TeiRerankRequest, raw_request: Request):
     handler = tei_rerank(raw_request)
     if handler is None:
         return base(raw_request).create_error_response(
