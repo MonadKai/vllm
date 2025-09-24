@@ -1,0 +1,17 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.9.2
+
+# install the latest transformers==4.57.0.dev0
+# RUN pip install git+https://github.com/huggingface/transformers
+
+# use gitlab to accelerate installation
+RUN pip install git+http://git.100credit.cn/kai.liu/transformers.git
+
+# add qwen3_omni_moe model
+COPY vllm/model_executor/layers/rotary_embedding.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/rotary_embedding.py
+COPY vllm/model_executor/models/qwen3_omni_moe_thinker.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_omni_moe_thinker.py
+COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+
+COPY vllm/transformers_utils/configs/ovis.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/configs/ovis.py
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
