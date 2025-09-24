@@ -4,7 +4,9 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.9.2
 # RUN pip install git+https://github.com/huggingface/transformers
 
 # use gitlab to accelerate installation
-RUN pip install git+http://git.100credit.cn/kai.liu/transformers.git
+ARG GITLAB_USER
+ARG GITLAB_TOKEN
+RUN pip install git+http://${GITLAB_USER}:${GITLAB_TOKEN}@git.100credit.cn/kai.liu/transformers.git -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # add qwen3_omni_moe model
 COPY vllm/model_executor/layers/rotary_embedding.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/rotary_embedding.py
