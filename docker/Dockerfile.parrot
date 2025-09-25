@@ -29,4 +29,7 @@ COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-
 COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
 COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
 
+COPY vllm/v1/sample/logits_processor/anti_repetition.py /usr/local/lib/python3.12/dist-packages/vllm/v1/sample/logits_processor/anti_repetition.py
+COPY vllm/v1/sample/logits_processor/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/v1/sample/logits_processor/__init__.py
+
 ENTRYPOINT ["vllm", "serve"]
