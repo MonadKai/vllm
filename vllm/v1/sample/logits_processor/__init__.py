@@ -17,6 +17,7 @@ from vllm.v1.sample.logits_processor.builtin import (LogitBiasLogitsProcessor,
                                                      MinPLogitsProcessor,
                                                      MinTokensLogitsProcessor,
                                                      process_dict_updates)
+from vllm.v1.sample.logits_processor.anti_repetition import AntiRepetitionLogitsProcessor
 from vllm.v1.sample.logits_processor.interface import (BatchUpdate,
                                                        LogitsProcessor,
                                                        MoveDirectionality)
@@ -39,6 +40,7 @@ BUILTIN_LOGITS_PROCESSORS: list[type[LogitsProcessor]] = [
     MinTokensLogitsProcessor,
     LogitBiasLogitsProcessor,
     MinPLogitsProcessor,
+    AntiRepetitionLogitsProcessor,
 ]
 
 
