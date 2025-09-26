@@ -49,19 +49,23 @@ class AntiRepetitionLogitsProcessor(LogitsProcessor):
     @staticmethod
     def add_request(
         params: SamplingParams, _: list[int], output_tok_ids: list[int]
-    ) -> Optional[tuple[list[int], int, int]]:
+    ) -> Optional[tuple[list[int], int, int, int]]:
         """Check if request needs anti-repetition processing."""
         if params.extra_args is None:
             return None
+        after_token_id = params.extra_args.get("after_token_id", None)
+        if after_token_id is None:
+            return None
+        
         repetition_threshold = params.extra_args.get("repetition_threshold", 3)
         eos_token_id = params.extra_args.get("eos_token_id", None)
         
-        if eos_token_id is None or repetition_threshold <= 1:
+        if repetition_threshold <= 1 or eos_token_id is None:
             return None
         
-        return output_tok_ids, eos_token_id, repetition_threshold
+        return output_tok_ids, after_token_id, eos_token_id, repetition_threshold
 
-    def _detect_repetition(self, token_ids: list[int], threshold: int) -> bool:
+    def _detect_repetition(self, token_ids: list[int], after_token_id: int, threshold: int) -> bool:
         """
         Detect if the token sequence has repetitive patterns.
         
@@ -72,14 +76,19 @@ class AntiRepetitionLogitsProcessor(LogitsProcessor):
         Returns:
             True if repetition is detected, False otherwise
         """
-        logger.info(f"token_ids: {token_ids}, threshold: {threshold}")
+        if after_token_id not in token_ids:
+            logger.info(f"after_token_id={after_token_id} not in token_ids")
+            return False
+        
+        token_ids = token_ids[token_ids.index(after_token_id):]
+        logger.info(f"token_ids after after_token_id: {token_ids}")
         # Check for single token repetition
         if self._check_single_token_repetition(token_ids, threshold):
             logger.info(f"single token repetition detected")
             return True
             
-        # Check for n-gram repetition (2-gram, 3-gram, etc.)
-        for n in range(2, min(5, len(token_ids) // threshold + 1)):
+        # Check for n-gram repetition (2-gram, 3-gram, 4-gram)
+        for n in range(2, 4):
             if self._check_ngram_repetition(token_ids, n, threshold):
                 logger.info(f"{n}-gram repetition detected")
                 return True
@@ -138,8 +147,8 @@ class AntiRepetitionLogitsProcessor(LogitsProcessor):
             # Check for requests that have developed repetition patterns
             to_boost = []
             
-            for index, (output_tok_ids, eos_token_id, threshold) in self.anti_repetition_reqs.items():
-                if self._detect_repetition(output_tok_ids, threshold):
+            for index, (output_tok_ids, after_token_id, eos_token_id, threshold) in self.anti_repetition_reqs.items():
+                if self._detect_repetition(output_tok_ids, after_token_id, threshold):
                     # Repetition detected, mark for EOS boosting
                     to_boost.append((index, eos_token_id))
                     
