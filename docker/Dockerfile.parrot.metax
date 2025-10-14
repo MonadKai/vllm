@@ -1,0 +1,33 @@
+FROM cr.metax-tech.com/public-ai-release/maca/vllm:maca.ai3.1.0.7-torch2.6-py310-ubuntu22.04-amd64 
+
+# add vllm tei plugin support
+# COPY dist/vllm_tei_plugin-0.10.0.tar.gz /tmp/vllm_tei_plugin-0.10.0.tar.gz
+# RUN pip install /tmp/vllm_tei_plugin-0.10.0.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.10.0.tar.gz
+
+# add vllm kubernetes plugin support
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# downgrade transformers v4.56.2 to v4.56.1 because parrot audio support is not implemented in v4.56.2
+COPY dist/transformers-4.56.1.tar.gz /tmp/transformers-4.56.1.tar.gz
+RUN pip uninstall transformers -y && pip install /tmp/transformers-4.56.1.tar.gz --no-deps && rm -rf /tmp/transformers-4.56.1.tar.gz
+
+# metax vllm has no torchaudio issue, only install librosa
+RUN pip install librosa==0.11.0
+
+# add vllm mixed precision model loader
+COPY vllm/model_executor/model_loader/mixed_precision_loader.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
+COPY vllm/model_executor/model_loader/__init__.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/model_loader/__init__.py
+COPY vllm/config.py /opt/conda/lib/python3.10/site-packages/vllm/config.py
+COPY vllm/inputs/registry.py /opt/conda/lib/python3.10/site-packages/vllm/inputs/registry.py
+
+# add vllm parrot audio support
+COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
+RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
+
+COPY vllm/model_executor/models/parrot_audio.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot_audio.py
+COPY vllm/model_executor/models/parrot2_audio.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot2_audio.py
+COPY vllm/model_executor/models/parrot2_audio_moe.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot2_audio_moe.py
+COPY vllm/model_executor/models/registry.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/registry.py
+
+ENTRYPOINT ["vllm", "serve"]
