@@ -467,10 +467,6 @@ class WorkerProc:
         unready_proc_handles: list[UnreadyWorkerProcHandle]
     ) -> list[WorkerProcHandle]:
 
-        e = Exception("WorkerProc initialization failed due to "
-                      "an exception in a background process. "
-                      "See stack trace for root cause.")
-
         pipes = {handle.ready_pipe: handle for handle in unready_proc_handles}
         ready_proc_handles: list[Optional[WorkerProcHandle]] = (
             [None] * len(unready_proc_handles))
@@ -482,19 +478,33 @@ class WorkerProc:
                     # Wait until the WorkerProc is ready.
                     unready_proc_handle = pipes.pop(pipe)
                     response: dict[str, Any] = pipe.recv()
-                    if response["status"] != "READY":
-                        raise e
-
-                    # Extract the message queue handle.
-                    worker_response_mq = MessageQueue.create_from_handle(
-                        response["handle"], 0)
-                    ready_proc_handles[unready_proc_handle.rank] = (
-                        WorkerProcHandle.from_unready_handle(
-                            unready_proc_handle, worker_response_mq))
+                    if response["status"] == "READY":
+                        # Extract the message queue handle.
+                        worker_response_mq = MessageQueue.create_from_handle(
+                            response["handle"], 0)
+                        ready_proc_handles[unready_proc_handle.rank] = (
+                            WorkerProcHandle.from_unready_handle(
+                                unready_proc_handle, worker_response_mq))
+                    elif response["status"] == "FAILURE":
+                        # Worker initialization failed with detailed exception
+                        error_msg = (
+                            f"WorkerProc (rank={unready_proc_handle.rank}) "
+                            f"initialization failed with exception:\n"
+                            f"{response.get('exception', 'Unknown error')}")
+                        raise RuntimeError(error_msg)
+                    else:
+                        raise RuntimeError(
+                            f"WorkerProc (rank={unready_proc_handle.rank}) "
+                            f"returned unexpected status: {response['status']}")
 
                 except EOFError:
-                    e.__suppress_context__ = True
-                    raise e from None
+                    # Worker process died before sending response
+                    error_msg = (
+                        f"WorkerProc (rank={unready_proc_handle.rank}) "
+                        f"initialization failed. The worker process "
+                        f"terminated unexpectedly before sending a response. "
+                        f"Check the logs above for error details.")
+                    raise RuntimeError(error_msg) from None
 
                 finally:
                     # Close connection.
@@ -583,6 +593,15 @@ class WorkerProc:
 
             if ready_writer is not None:
                 logger.exception("WorkerProc failed to start.")
+                # Send failure message with exception details to parent
+                try:
+                    ready_writer.send({
+                        "status": "FAILURE",
+                        "exception": traceback.format_exc(),
+                    })
+                except Exception:
+                    # If we can't send the error, just log it
+                    logger.exception("Failed to send error message to parent.")
             elif shutdown_event.is_set():
                 logger.info("WorkerProc shutting down.")
             else:
