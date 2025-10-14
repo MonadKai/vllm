@@ -10,10 +10,10 @@ FROM cr.metax-tech.com/public-ai-release/maca/vllm:maca.ai3.1.0.7-torch2.6-py310
 
 # downgrade transformers v4.56.2 to v4.56.1 because parrot audio support is not implemented in v4.56.2
 COPY dist/transformers-4.56.1.tar.gz /tmp/transformers-4.56.1.tar.gz
-RUN pip uninstall transformers -y && pip install /tmp/transformers-4.56.1.tar.gz --no-deps && rm -rf /tmp/transformers-4.56.1.tar.gz
+RUN /opt/conda/bin/pip uninstall transformers -y && /opt/conda/bin/pip install /tmp/transformers-4.56.1.tar.gz --no-deps && rm -rf /tmp/transformers-4.56.1.tar.gz
 
 # metax vllm has no torchaudio issue, only install librosa
-RUN pip install librosa==0.11.0
+RUN /opt/conda/bin/pip install librosa==0.11.0
 
 # add vllm mixed precision model loader
 COPY vllm/model_executor/model_loader/mixed_precision_loader.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
@@ -23,11 +23,11 @@ COPY vllm/inputs/registry.py /opt/conda/lib/python3.10/site-packages/vllm/inputs
 
 # add vllm parrot audio support
 COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
-RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
+RUN /opt/conda/bin/pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
 
 COPY vllm/model_executor/models/parrot_audio.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot_audio.py
 COPY vllm/model_executor/models/parrot2_audio.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot2_audio.py
 COPY vllm/model_executor/models/parrot2_audio_moe.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/parrot2_audio_moe.py
 COPY vllm/model_executor/models/registry.py /opt/conda/lib/python3.10/site-packages/vllm/model_executor/models/registry.py
 
-ENTRYPOINT ["vllm", "serve"]
+ENTRYPOINT ["/opt/conda/bin/vllm", "serve"]
