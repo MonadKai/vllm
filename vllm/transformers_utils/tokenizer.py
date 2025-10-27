@@ -17,7 +17,7 @@ from vllm import envs
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import (
     get_sentence_transformer_tokenizer_config)
-from vllm.transformers_utils.tokenizers import MistralTokenizer
+from vllm.transformers_utils.tokenizers import MistralTokenizer, StepAudio2Tokenizer
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.utils import make_async
 
@@ -205,6 +205,12 @@ def get_tokenizer(
     if tokenizer_mode == "mistral":
         tokenizer = MistralTokenizer.from_pretrained(str(tokenizer_name),
                                                      revision=revision)
+    elif tokenizer_mode == "step_audio_2":
+        tokenizer = StepAudio2Tokenizer.from_pretrained(str(tokenizer_name),
+                                                        *args,
+                                                        trust_remote_code=trust_remote_code,
+                                                        revision=revision,
+                                                        **kwargs)
     elif tokenizer_mode == "custom":
         from vllm.transformers_utils.tokenizer_base import TokenizerRegistry
         tokenizer = TokenizerRegistry.get_tokenizer(str(tokenizer_name),

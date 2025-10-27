@@ -1,0 +1,30 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
+
+
+# add librosa
+RUN pip install librosa==0.11.0
+
+# add step-audio2-mini support
+COPY vllm/audio_parsers/ /usr/local/lib/python3.12/dist-packages/vllm/audio_parsers/
+
+COPY vllm/config/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/config/__init__.py
+COPY vllm/engine/arg_utils.py /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py
+
+COPY vllm/entrypoints/chat_utils.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/chat_utils.py
+COPY vllm/entrypoints/openai/api_server.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py
+COPY vllm/entrypoints/openai/protocol.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/protocol.py
+COPY vllm/entrypoints/openai/serving_engine.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/serving_engine.py
+COPY vllm/entrypoints/openai/serving_chat.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/serving_chat.py
+COPY vllm/entrypoints/openai/tool_parsers/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/tool_parsers/__init__.py
+COPY vllm/entrypoints/openai/tool_parsers/step_audio_2_tool_parser.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/tool_parsers/step_audio_2_tool_parser.py
+
+COPY vllm/transformers_utils/configs/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/configs/__init__.py
+COPY vllm/transformers_utils/configs/step_audio.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/configs/step_audio.py
+COPY vllm/transformers_utils/tokenizer.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/tokenizer.py
+COPY vllm/transformers_utils/tokenizers/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/tokenizers/__init__.py
+COPY vllm/transformers_utils/tokenizers/step_audio_2_tokenizer.py /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/tokenizers/step_audio_2_tokenizer.py
+
+COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+COPY vllm/model_executor/models/mm_step_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/mm_step_audio.py
+
+ENTRYPOINT ["vllm", "serve"]

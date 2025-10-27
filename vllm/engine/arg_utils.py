@@ -359,6 +359,7 @@ class EngineArgs:
     hf_token: Optional[Union[bool, str]] = ModelConfig.hf_token
     hf_overrides: HfOverrides = get_field(ModelConfig, "hf_overrides")
     tokenizer_revision: Optional[str] = ModelConfig.tokenizer_revision
+    audio_parser: Optional[str] = ModelConfig.audio_parser
     quantization: Optional[QuantizationMethods] = ModelConfig.quantization
     enforce_eager: bool = ModelConfig.enforce_eager
     max_seq_len_to_capture: int = ModelConfig.max_seq_len_to_capture
@@ -583,6 +584,8 @@ class EngineArgs:
                                  **model_kwargs["override_attention_dtype"])
         model_group.add_argument("--logits-processors",
                                  **model_kwargs["logits_processors"])
+        model_group.add_argument("--audio-parser",
+                                 **model_kwargs["audio_parser"])
         model_group.add_argument("--io-processor-plugin",
                                  **model_kwargs["io_processor_plugin"])
 
@@ -1007,6 +1010,7 @@ class EngineArgs:
             model_impl=self.model_impl,
             override_attention_dtype=self.override_attention_dtype,
             logits_processors=self.logits_processors,
+            audio_parser=self.audio_parser,
             io_processor_plugin=self.io_processor_plugin,
         )
 

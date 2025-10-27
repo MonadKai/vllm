@@ -22,6 +22,7 @@ from .pythonic_tool_parser import PythonicToolParser
 from .qwen3coder_tool_parser import Qwen3CoderToolParser
 from .seed_oss_tool_parser import SeedOssToolParser
 from .step3_tool_parser import Step3ToolParser
+from .step_audio_2_tool_parser import StepAudio2ToolParser
 from .xlam_tool_parser import xLAMToolParser
 
 __all__ = [
@@ -47,5 +48,6 @@ __all__ = [
     "Qwen3CoderToolParser",
     "SeedOssToolParser",
     "Step3ToolParser",
+    "StepAudio2ToolParser",
     "OpenAIToolParser",
 ]
