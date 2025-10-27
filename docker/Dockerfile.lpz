@@ -1,0 +1,10 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
+
+# add audio support
+RUN pip install librosa==0.11.0
+
+# add logits processor zoo support
+COPY dist/logits_processor_zoo-0.2.1.tar.gz /tmp/logits_processor_zoo-0.2.1.tar.gz
+RUN pip install /tmp/logits_processor_zoo-0.2.1.tar.gz --no-deps && rm -rf /tmp/logits_processor_zoo-0.2.1.tar.gz
+
+ENTRYPOINT ["vllm", "serve"]
