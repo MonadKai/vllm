@@ -322,6 +322,8 @@ class precompiled_wheel_utils:
                     "vllm/_C.abi3.so",
                     "vllm/_moe_C.abi3.so",
                     "vllm/_flashmla_C.abi3.so",
+                    "vllm/_flashmla_extension_C.abi3.so",
+                    "vllm/_sparse_flashmla_C.abi3.so",
                     "vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so",
                     "vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so",
                     "vllm/cumem_allocator.abi3.so",
@@ -589,6 +591,8 @@ if _is_cuda():
         # not targeting a hopper system
         ext_modules.append(
             CMakeExtension(name="vllm._flashmla_C", optional=True))
+        ext_modules.append(
+            CMakeExtension(name="vllm._flashmla_extension_C", optional=True))
     ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
 
 if _build_custom_ops():
@@ -662,7 +666,7 @@ setup(
                   "mistral_common[audio]"],  # Required for audio processing
         "video": [],  # Kept for backwards compatibility
         # FlashInfer should be updated together with the Dockerfile
-        "flashinfer": ["flashinfer-python==0.3.0"],
+        "flashinfer": ["flashinfer-python==0.3.1"],
         # Optional deps for AMD FP4 quantization support
         "petit-kernel": ["petit-kernel"],
     },
