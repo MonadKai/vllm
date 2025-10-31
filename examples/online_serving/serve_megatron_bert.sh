@@ -1,6 +1,5 @@
 # e.g. Fengshenbang/Erlangshen-MegatronBert-1.3B-Chinese
 MODEL_PATH="/path/to/MegatronBert"
-MODEL_PATH="/opt/huggingface/bairong-inc/MegatronBert"
 SERVED_MODEL_NAME="megatron-bert"
 
 if [ ! -f $MODEL_PATH/modules.json ] || [ ! -f $MODEL_PATH/config_sentence_transformers.json ] || [ ! -f $MODEL_PATH/sentence_bert_config.json ]; then
