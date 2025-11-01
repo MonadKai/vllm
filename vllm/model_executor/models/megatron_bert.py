@@ -605,11 +605,6 @@ class MegatronBertForSequenceClassification(nn.Module, SupportsV0Only,
         inputs_embeds: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if token_type_ids is not None:
-            assert self.bert.config.vocab_size < (1 << TOKEN_TYPE_SHIFT)
-            assert input_ids is not None
-            _encode_token_type_ids(input_ids, token_type_ids)
-
         return self.bert(
             input_ids=input_ids,
             positions=positions,
