@@ -1,36 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from collections.abc import Iterable, Set
-from typing import Optional, Union
+from collections.abc import Iterable
+from typing import Optional
 
 import torch
 from torch import nn
 from transformers import MegatronBertConfig
 
-from vllm.attention.layers.encoder_only_attention import EncoderOnlyAttention
+from vllm.attention import Attention, AttentionType
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, PoolerConfig, VllmConfig
 from vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
-from vllm.model_executor.layers.pooler import (ClassifierPooler,
-                                               DispatchPooler, Pooler,
-                                               PoolingMethod,
-                                               PoolingParamsUpdate,
+from vllm.model_executor.layers.pooler import (CrossEncodingPooler, Pooler,
                                                PoolingType)
 from vllm.model_executor.layers.quantization import QuantizationConfig
+from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.sequence import IntermediateTensors
-from vllm.tasks import PoolingTask
-from vllm.v1.pool.metadata import PoolingMetadata
+from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.model_executor.pooling_metadata import PoolingMetadata
+from vllm.sequence import IntermediateTensors, PoolerOutput
+from vllm.transformers_utils.config import (
+    get_cross_encoder_activation_function)
 
-from .interfaces import SupportsCrossEncoding, SupportsQuant
-from .interfaces_base import default_pooling_type
-from .utils import AutoWeightsLoader, WeightsMapper, maybe_prefix
+from .interfaces import SupportsCrossEncoding, SupportsQuant, SupportsV0Only
+from .utils import WeightsMapper, maybe_prefix
 
 
 class MegatronBertEmbedding(nn.Module):
@@ -39,80 +39,78 @@ class MegatronBertEmbedding(nn.Module):
 
         super().__init__()
         self.size = config.hidden_size
-        self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, config.hidden_size
-        )
+        self.word_embeddings = VocabParallelEmbedding(config.vocab_size,
+                                                      config.hidden_size)
         self.position_embeddings = VocabParallelEmbedding(
-            config.max_position_embeddings, config.hidden_size
-        )
+            config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = VocabParallelEmbedding(
-            config.type_vocab_size, config.hidden_size
-        )
+            config.type_vocab_size, config.hidden_size)
 
-        self.register_buffer(
-            "position_ids",
-            torch.arange(config.max_position_embeddings).unsqueeze(0),
-        )
         self.position_embedding_type = config.position_embedding_type
-        if self.position_embedding_type != "absolute":
-            raise ValueError(
-                "Only 'absolute' position_embedding_type" + " is supported"
-            )
+        if self.position_embedding_type == "absolute":
+            self.position_embeddings = VocabParallelEmbedding(
+                config.max_position_embeddings, config.hidden_size)
+            self.position_ids = nn.Parameter(
+                torch.empty((1, config.max_position_embeddings)), )
+        elif self.position_embedding_type == "rotary":
+            self.position_embeddings = None
+            self.position_ids = None
+        else:
+            raise ValueError("Only 'absolute' and 'rotary' " +
+                             "position_embedding_type is supported")
 
     def forward(
         self,
         input_ids: torch.Tensor,
+        seq_lens: torch.Tensor,
         position_ids: torch.Tensor,
+        token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        input_shape = input_ids.size()
 
-        token_type_ids = _decode_token_type_ids(input_ids)
-
+        # Input embeddings.
         inputs_embeds = self.word_embeddings(input_ids)
-        position_embeddings = self.position_embeddings(position_ids)
+
+        if token_type_ids is None:
+            token_type_ids = torch.zeros(input_shape,
+                                         dtype=torch.long,
+                                         device=inputs_embeds.device)
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = inputs_embeds + token_type_embeddings + position_embeddings
+        embeddings = inputs_embeds + token_type_embeddings
+
+        if self.position_embedding_type == "absolute":
+            position_embeddings = self.position_embeddings(position_ids)
+            embeddings += position_embeddings
+
         return embeddings
 
 
-class MegatronBertPooler(Pooler):
+class MegatronBertPooler(nn.Module):
 
     def __init__(self, config: MegatronBertConfig):
         super().__init__()
-
-        self.pooling = PoolingMethod.from_pooling_type(PoolingType.CLS)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
-    def get_supported_tasks(self) -> Set[PoolingTask]:
-        return self.pooling.get_supported_tasks()
-
-    def get_pooling_updates(self, task: PoolingTask) -> PoolingParamsUpdate:
-        return self.pooling.get_pooling_updates(task)
-
-    def _head(self, pooled_output: torch.Tensor):
-        pooled_output = self.dense(pooled_output)
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # We "pool" the model by simply taking the hidden state corresponding
+        # to the first token.
+        first_token_tensor = hidden_states[0, :]
+        pooled_output = self.dense(first_token_tensor)
         pooled_output = self.activation(pooled_output)
         return pooled_output
 
-    def forward(
-        self,
-        hidden_states: Union[torch.Tensor, list[torch.Tensor]],
-        pooling_metadata: PoolingMetadata,
-    ) -> Union[torch.Tensor, list[torch.Tensor]]:
-        pooled_output = self.pooling(hidden_states, pooling_metadata)
 
-        if isinstance(pooled_output, list):
-            pooled_output = [self._head(output) for output in pooled_output]
-        else:
-            pooled_output = self._head(pooled_output)
-
-        return pooled_output
-
-
+@support_torch_compile
 class MegatronBertEncoder(nn.Module):
-    def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
+
+    def __init__(self,
+                 vllm_config: VllmConfig,
+                 bias: bool = True,
+                 rotary_kwargs: Optional[dict] = None,
+                 prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
@@ -123,6 +121,8 @@ class MegatronBertEncoder(nn.Module):
                     config=config,
                     cache_config=cache_config,
                     quant_config=quant_config,
+                    bias=bias,
+                    rotary_kwargs=rotary_kwargs,
                     prefix=f"{prefix}.layer.{layer_idx}",
                 )
                 for layer_idx in range(config.num_hidden_layers)
@@ -132,23 +132,25 @@ class MegatronBertEncoder(nn.Module):
 
     def forward(
         self,
+        positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         for layer in self.layer:
-            hidden_states = layer(hidden_states)
+            hidden_states = layer(positions, hidden_states)
         # HINT: if you want to use the hidden_states before the ln, you can return hidden_states here
         hidden_states = self.ln(hidden_states)
         return hidden_states
 
 
 class MegatronBertLayer(nn.Module):
-    def __init__(
-        self,
-        config: MegatronBertConfig,
-        cache_config: Optional[CacheConfig] = None,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ):
+
+    def __init__(self,
+                 config: MegatronBertConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 bias: bool = True,
+                 rotary_kwargs: Optional[dict] = None,
+                 prefix: str = ""):
         super().__init__()
 
         self.attention = MegatronBertAttention(
@@ -157,29 +159,31 @@ class MegatronBertLayer(nn.Module):
             layer_norm_eps=config.layer_norm_eps,
             cache_config=cache_config,
             quant_config=quant_config,
-            prefix=f"{prefix}.attention",
-        )
+            bias=bias,
+            rotary_kwargs=rotary_kwargs,
+            prefix=f"{prefix}.attention")
 
         self.ln = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
+        assert config.hidden_act not in ["silu", "gelu_and_mul"], "Only gelu_new is supported for intermediate layer"
         self.intermediate = MegatronBertIntermediate(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.intermediate",
-        )
+            prefix=f"{prefix}.intermediate")
 
         self.output = MegatronBertOutput(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             layer_norm_eps=config.layer_norm_eps,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.output",
-        )
+            prefix=f"{prefix}.output")
 
-    def forward(self, hidden_states: torch.Tensor):
-        attn_output = self.attention(hidden_states)
+    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor):
+        attn_output = self.attention(positions, hidden_states)
         ln_output = self.ln(attn_output)
         intermediate_output = self.intermediate(ln_output)
         output = self.output(intermediate_output, attn_output)
@@ -187,6 +191,7 @@ class MegatronBertLayer(nn.Module):
 
 
 class MegatronBertAttention(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
@@ -194,6 +199,8 @@ class MegatronBertAttention(nn.Module):
         layer_norm_eps: float,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        bias: bool = True,
+        rotary_kwargs: Optional[dict] = None,
         prefix: str = "",
     ):
         super().__init__()
@@ -204,22 +211,24 @@ class MegatronBertAttention(nn.Module):
             num_attention_heads=num_attention_heads,
             cache_config=cache_config,
             quant_config=quant_config,
-            prefix=f"{prefix}.self",
-        )
+            bias=bias,
+            rotary_kwargs=rotary_kwargs,
+            prefix=f"{prefix}.self")
 
         self.output = MegatronBertSelfOutput(
             hidden_size=hidden_size,
             layer_norm_eps=layer_norm_eps,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.output",
-        )
+            prefix=f"{prefix}.output")
 
     def forward(
         self,
+        positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         hidden_states = self.ln(hidden_states)
-        self_output = self.self(hidden_states)
+        self_output = self.self(positions, hidden_states)
         return self.output(self_output, hidden_states)
 
 
@@ -231,6 +240,8 @@ class MegatronBertSelfAttention(nn.Module):
         num_attention_heads: int,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        bias: bool = True,
+        rotary_kwargs: Optional[dict] = None,
         prefix: str = "",
     ):
         super().__init__()
@@ -255,36 +266,46 @@ class MegatronBertSelfAttention(nn.Module):
             head_size=self.head_dim,
             total_num_heads=self.total_num_heads,
             total_num_kv_heads=self.total_num_kv_heads,
-            bias=True,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.qkv_proj",
-        )
+            prefix=f"{prefix}.qkv_proj")
 
-        self.attn = EncoderOnlyAttention(
-            num_heads=self.num_heads,
-            head_size=self.head_dim,
-            scale=self.scaling,
-            num_kv_heads=self.num_kv_heads,
-            cache_config=cache_config,
-            quant_config=quant_config,
-            prefix=f"{prefix}.attn",
-        )
+        if rotary_kwargs:
+            self.rotary_emb = get_rope(**rotary_kwargs)
+        else:
+            self.rotary_emb = None
+
+        self.attn = Attention(num_heads=self.num_heads,
+                              head_size=self.head_dim,
+                              scale=self.scaling,
+                              num_kv_heads=self.num_kv_heads,
+                              cache_config=cache_config,
+                              quant_config=quant_config,
+                              prefix=f"{prefix}.attn",
+                              attn_type=AttentionType.ENCODER_ONLY)
 
     def forward(
         self,
+        positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+
+        if self.rotary_emb:
+            q, k = self.rotary_emb(positions, q, k)
+
         output = self.attn(q, k, v)
         return output
 
 
 class MegatronBertSelfOutput(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
         layer_norm_eps: float,
+        bias: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
@@ -292,10 +313,9 @@ class MegatronBertSelfOutput(nn.Module):
         self.dense = RowParallelLinear(
             input_size=hidden_size,
             output_size=hidden_size,
-            bias=True,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.dense",
-        )
+            prefix=f"{prefix}.dense")
 
     def forward(
         self, hidden_states: torch.Tensor, input_tensor: torch.Tensor
@@ -305,11 +325,13 @@ class MegatronBertSelfOutput(nn.Module):
 
 
 class MegatronBertIntermediate(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        bias: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
@@ -317,7 +339,7 @@ class MegatronBertIntermediate(nn.Module):
         self.dense = ColumnParallelLinear(
             input_size=hidden_size,
             output_size=intermediate_size,
-            bias=True,
+            bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.dense",
         )
@@ -336,6 +358,7 @@ class MegatronBertOutput(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         layer_norm_eps: float,
+        bias: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
@@ -344,10 +367,9 @@ class MegatronBertOutput(nn.Module):
         self.dense = RowParallelLinear(
             input_size=intermediate_size,
             output_size=hidden_size,
-            bias=True,
+            bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.dense",
-        )
+            prefix=f"{prefix}.dense")
 
     def forward(
         self, hidden_states: torch.Tensor, input_tensor: torch.Tensor
@@ -356,43 +378,49 @@ class MegatronBertOutput(nn.Module):
         return hidden_states + input_tensor
 
 
-@support_torch_compile
-@default_pooling_type("CLS")
 class MegatronBertModel(nn.Module, SupportsQuant):
-
-    is_pooling_model = True
-
     packed_modules_mapping = {"qkv_proj": ["query", "key", "value"]}
 
-    def __init__(
-        self,
-        *,
-        vllm_config: VllmConfig,
-        prefix: str = "",
-        embedding_class: type[nn.Module] = MegatronBertEmbedding,
-    ) -> None:
+    def __init__(self,
+                 *,
+                 vllm_config: VllmConfig,
+                 prefix: str = "",
+                 embedding_class: type = MegatronBertEmbedding,
+                 bias: bool = True,
+                 rotary_kwargs: Optional[dict] = None,
+                 add_pooling_layer: bool = False):
         super().__init__()
+        """
+        For BertModel, all linear layers have bias.
+        For NomicBertModel, all linear layers do not have bias.
+        """
 
         self.config = vllm_config.model_config.hf_config
         self.embeddings = embedding_class(self.config)
-        self.encoder = MegatronBertEncoder(
-            vllm_config=vllm_config, prefix=f"{prefix}.encoder"
-        )
+        self.encoder = MegatronBertEncoder(vllm_config=vllm_config, bias=bias, rotary_kwargs=rotary_kwargs, prefix=f"{prefix}.encoder")
+        self.pooler = MegatronBertPooler(self.config) if add_pooling_layer else None
 
     def forward(
         self,
         input_ids: torch.Tensor,
-        positions: torch.Tensor,
+        position_ids: torch.Tensor,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if inputs_embeds is not None:
             hidden_states = inputs_embeds
         else:
-            hidden_states = self.embeddings(input_ids=input_ids, position_ids=positions)
-        return self.encoder(hidden_states)
+            attn_metadata = get_forward_context().attn_metadata
+            assert hasattr(attn_metadata, "seq_lens_tensor")
+            hidden_states = self.embeddings(
+                input_ids=input_ids,
+                seq_lens=attn_metadata.seq_lens_tensor,
+                position_ids=position_ids,
+                token_type_ids=token_type_ids)
+        return self.encoder(position_ids, hidden_states)
 
-    def _load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
             ("qkv_proj", "query", "q"),
@@ -400,69 +428,40 @@ class MegatronBertModel(nn.Module, SupportsQuant):
             ("qkv_proj", "value", "v"),
         ]
 
-        loaded_stacked_params = []
-        other_weights = []
         params_dict = dict(self.named_parameters())
+        loaded_params: set[str] = set()
         for name, loaded_weight in weights:
+            if self.pooler is None and "pooler" in name:
+                continue
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:
                     continue
-
-                replaced_name = name.replace(weight_name, param_name)
-                if replaced_name not in params_dict:
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
                     continue
-                param = params_dict[replaced_name]
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
-                loaded_stacked_params.append(replaced_name)
-                break
-            else:
+                # HINT: add check in case that partial encoder layers' weights are loaded
                 if name in params_dict:
-                    other_weights.append((name, loaded_weight))
-
-        return other_weights, loaded_stacked_params
-
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        other_weights, loaded_stacked_params = self._load_weights(weights)
-
-        loader = AutoWeightsLoader(self, skip_prefixes=["pooler."])
-        loaded_params = loader.load_weights(other_weights)
-        loaded_params.update(loaded_stacked_params)
+                    param = params_dict[name]
+                    weight_loader = param.weight_loader
+                    weight_loader(param, loaded_weight, shard_id)
+                    loaded_params.add(name)
+                    break
+            else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                # HINT: add check in case that partial encoder layers' weights are loaded
+                if name in params_dict:
+                    param = params_dict[name]
+                    weight_loader = getattr(param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(param, loaded_weight)
+                    loaded_params.add(name)
         return loaded_params
 
 
-@default_pooling_type("ALL")
-class MegatronBertPoolingModel(MegatronBertModel):
-
-    is_pooling_model = True
-
-    def __init__(
-        self,
-        *,
-        vllm_config: VllmConfig,
-        prefix: str = "",
-        embedding_class: type[nn.Module] = MegatronBertEmbedding,
-    ) -> None:
-        super().__init__(
-            vllm_config=vllm_config,
-            prefix=prefix,
-            embedding_class=embedding_class,
-        )
-
-        config = vllm_config.model_config.hf_config
-        self.pooler = MegatronBertPooler(config)
-
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        other_weights, loaded_stacked_params = self._load_weights(weights)
-
-        loader = AutoWeightsLoader(self)
-        loaded_params = loader.load_weights(other_weights)
-        loaded_params.update(loaded_stacked_params)
-        return loaded_params
-
-
-@default_pooling_type("CLS")
-class MegatronBertEmbeddingModel(nn.Module, SupportsQuant):
+class MegatronBertEmbeddingModel(nn.Module, SupportsV0Only, SupportsQuant):
     """A model that uses MegatronBert to provide embedding functionalities.
 
     This class encapsulates the MegatronBertModel and provides an interface for
@@ -472,43 +471,46 @@ class MegatronBertEmbeddingModel(nn.Module, SupportsQuant):
         model: An instance of MegatronBertModel used for forward operations.
         _pooler: An instance of Pooler used for pooling operations.
     """
-
-    is_pooling_model = True
+    hf_to_vllm_mapper = WeightsMapper(orig_to_new_prefix={"bert.": ""})
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
-
         pooler_config = vllm_config.model_config.pooler_config
-        assert pooler_config is not None
-
         self.model = self._build_model(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
-        self.pooler = self._build_pooler(pooler_config)
+        self._pooler = self._build_pooler(pooler_config)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Optional[torch.Tensor],
         positions: torch.Tensor,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         return self.model(
             input_ids=input_ids,
-            positions=positions,
+            position_ids=positions,
             inputs_embeds=inputs_embeds,
             intermediate_tensors=intermediate_tensors,
         )
+
+    def pooler(
+        self,
+        hidden_states: torch.Tensor,
+        pooling_metadata: PoolingMetadata,
+    ) -> Optional[PoolerOutput]:
+        return self._pooler(hidden_states, pooling_metadata)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
         weights_list = list(weights)
 
         has_model_prefix = any(name.startswith("model.") for name, _ in weights_list)
         if not has_model_prefix:
-            mapper = WeightsMapper(orig_to_new_prefix={"bert.": "model."})
-
-        loader = AutoWeightsLoader(self, skip_prefixes=["lm_head.", "cls."])
-        return loader.load_weights(weights_list, mapper=mapper)
+            weights_list = self.hf_to_vllm_mapper.apply(weights_list)
+        weights = ((name, data) for name, data in weights_list
+                   if not (name.startswith("lm_head.") or name.startswith("cls.")))
+        self.model.load_weights(weights)
 
     def _build_model(
         self, vllm_config: VllmConfig, prefix: str = ""
@@ -520,63 +522,14 @@ class MegatronBertEmbeddingModel(nn.Module, SupportsQuant):
         )
 
     def _build_pooler(self, pooler_config: PoolerConfig) -> Pooler:
-        return DispatchPooler(
-            {
-                "encode": Pooler.for_encode(pooler_config),
-                "embed": Pooler.for_embed(pooler_config),
-            }
-        )
+        return Pooler.from_config_with_defaults(pooler_config,
+                                                pooling_type=PoolingType.CLS,
+                                                normalize=True,
+                                                softmax=False)
 
 
-# Here we encode the token type ids together with the input ids.
-# Since we use int 32 for the input IDs and the vocabulary size
-# is way lower than 2**31, there is room to encode additional
-# bits. At the same time, for cross-encoder use cases, the
-# token type ids are only 0 or 1, requiring only 1 bit.
-# This means that we can store the token type ids in the 31st
-# bit. We void the 32nd bit because that would produce a negative
-# number, which could be used to signal other things.
-#
-# The reason for all of this is that all the tensors that are
-# passed as input to the forward function of a module marked
-# with @support_torch_compile have to be persistent. So to
-# avoid adding more persistent tensors in the model runner, we
-# encode more information in the same persistent tensor.
-#
-# Since the *ForClassification module is outside of the BertModel
-# which is compiled, we can do the encoding here and then separate
-# the information again in the Embedding  layer. Since with bit masks
-# we can do this entirely with torch operations and without branching,
-# it works with torch compile.
-
-TOKEN_TYPE_SHIFT = 30
-
-
-def _encode_token_type_ids(
-    input_ids: torch.Tensor, token_type_ids: torch.Tensor
-) -> None:
-    # input_ids can be padded to the right
-    input_ids[: token_type_ids.shape[0]].bitwise_or_(token_type_ids << TOKEN_TYPE_SHIFT)
-
-
-def _decode_token_type_ids(input_ids: torch.Tensor) -> torch.Tensor:
-    ids_mask = (
-        torch.ones_like(input_ids, dtype=torch.int32, device=input_ids.device)
-        << TOKEN_TYPE_SHIFT
-    )
-    tokens_mask = ids_mask.bitwise_not()
-
-    token_type_ids = input_ids.bitwise_and(ids_mask) >> TOKEN_TYPE_SHIFT
-
-    input_ids.bitwise_and_(tokens_mask)
-
-    return token_type_ids
-
-
-@default_pooling_type("CLS")
-class MegatronBertForSequenceClassification(
-    nn.Module, SupportsCrossEncoding, SupportsQuant
-):
+class MegatronBertForSequenceClassification(nn.Module, SupportsCrossEncoding, 
+                                            SupportsQuant):
     """A model that uses Bert to provide embedding functionalities.
 
     This class encapsulates the BertModel and provides an interface for
@@ -587,51 +540,52 @@ class MegatronBertForSequenceClassification(
         _pooler: An instance of Pooler used for pooling operations.
     """
 
-    is_pooling_model = True
-
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
 
+        self.default_activation_function = \
+            get_cross_encoder_activation_function(config)
+
         self.num_labels = config.num_labels
-        self.bert = MegatronBertPoolingModel(
+        self.bert = MegatronBertModel(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "bert"),
             embedding_class=MegatronBertEmbedding,
+            add_pooling_layer=True,
         )
-        self.classifier = nn.Linear(
-            config.hidden_size,
-            config.num_labels,
-            dtype=vllm_config.model_config.head_dtype,
-        )
-
-        pooler_config = vllm_config.model_config.pooler_config
-        assert pooler_config is not None
-
-        self.pooler = DispatchPooler(
-            {
-                "encode": Pooler.for_encode(pooler_config),
-                "classify": ClassifierPooler(
-                    pooling=self.bert.pooler,
-                    classifier=self.classifier,
-                    act_fn=ClassifierPooler.act_fn_for_seq_cls(
-                        vllm_config.model_config
-                    ),
-                ),
-                "score": ClassifierPooler(
-                    pooling=self.bert.pooler,
-                    classifier=self.classifier,
-                    act_fn=ClassifierPooler.act_fn_for_cross_encoder(
-                        vllm_config.model_config
-                    ),
-                ),
-            }
-        )
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self._pooler = CrossEncodingPooler(config, self.classifier,
+                                           self.bert.pooler)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
-        loader = AutoWeightsLoader(self)
-        loaded_params = loader.load_weights(weights)
-        return loaded_params
+
+        self_weights = []
+
+        def weight_filter():
+            for name, weight in weights:
+                if name.startswith("bert."):
+                    yield (name[len("bert."):], weight)
+                else:
+                    self_weights.append((name, weight))
+
+        self.bert.load_weights(weight_filter())
+
+        params_dict = dict(self.named_parameters())
+
+        for name, loaded_weight in self_weights:
+            if name.startswith("classifier"):
+                param = params_dict[name]
+                weight_loader = getattr(param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(param, loaded_weight)
+
+    def pooler(
+        self,
+        hidden_states: torch.Tensor,
+        pooling_metadata: PoolingMetadata,
+    ) -> Optional[PoolerOutput]:
+        return self._pooler(hidden_states, pooling_metadata)
 
     def forward(
         self,
@@ -641,14 +595,10 @@ class MegatronBertForSequenceClassification(
         inputs_embeds: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if token_type_ids is not None:
-            assert self.bert.config.vocab_size < (1 << TOKEN_TYPE_SHIFT)
-            assert input_ids is not None
-            _encode_token_type_ids(input_ids, token_type_ids)
-
         return self.bert(
             input_ids=input_ids,
             positions=positions,
             inputs_embeds=inputs_embeds,
             intermediate_tensors=intermediate_tensors,
+            token_type_ids=token_type_ids,
         )
