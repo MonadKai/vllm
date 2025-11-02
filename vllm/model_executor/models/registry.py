@@ -258,6 +258,9 @@ _MULTIMODAL_MODELS = {
     "Ovis": ("ovis", "Ovis"),
     "Ovis2_5": ("ovis2_5", "Ovis2_5"),
     "PaliGemmaForConditionalGeneration": ("paligemma", "PaliGemmaForConditionalGeneration"),  # noqa: E501
+    "ParrotAudioForConditionalGeneration": ("parrot_audio", "ParrotAudioForConditionalGeneration"),  # noqa: E501
+    "Parrot2AudioForConditionalGeneration": ("parrot2_audio", "Parrot2AudioForConditionalGeneration"),  # noqa: E501
+    "Parrot2AudioMoeForConditionalGeneration": ("parrot2_audio_moe", "Parrot2AudioMoeForConditionalGeneration"),  # noqa: E501
     "Phi3VForCausalLM": ("phi3v", "Phi3VForCausalLM"),
     "Phi4MMForCausalLM": ("phi4mm", "Phi4MMForCausalLM"),
     "Phi4MultimodalForCausalLM": ("phi4_multimodal", "Phi4MultimodalForCausalLM"),  # noqa: E501
