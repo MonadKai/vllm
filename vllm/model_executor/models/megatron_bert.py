@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from collections.abc import Iterable
-from typing import Optional
+from typing import Iterable, Optional, Set, Tuple
 
 import torch
 from torch import nn
@@ -420,7 +419,7 @@ class MegatronBertModel(nn.Module, SupportsQuant):
                 token_type_ids=token_type_ids)
         return self.encoder(position_ids, hidden_states)
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
             ("qkv_proj", "query", "q"),
@@ -429,7 +428,7 @@ class MegatronBertModel(nn.Module, SupportsQuant):
         ]
 
         params_dict = dict(self.named_parameters())
-        loaded_params: set[str] = set()
+        loaded_params: Set[str] = set()
         for name, loaded_weight in weights:
             if self.pooler is None and "pooler" in name:
                 continue
@@ -502,7 +501,7 @@ class MegatronBertEmbeddingModel(nn.Module, SupportsV0Only, SupportsQuant):
     ) -> Optional[PoolerOutput]:
         return self._pooler(hidden_states, pooling_metadata)
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         weights_list = list(weights)
 
         has_model_prefix = any(name.startswith("model.") for name, _ in weights_list)
@@ -558,7 +557,7 @@ class MegatronBertForSequenceClassification(nn.Module, SupportsCrossEncoding,
         self._pooler = CrossEncodingPooler(config, self.classifier,
                                            self.bert.pooler)
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
 
         self_weights = []
 
