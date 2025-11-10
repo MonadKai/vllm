@@ -3322,6 +3322,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         max_task = max(output_size.items(), key=lambda x: x[1])[0]
         return self._dummy_pooler_run_task(hidden_states, max_task)
 
+    def _get_mm_encoder_warmup_sizes(self, max_batch_size: int) -> list[int]:
+        # if hasattr(self.compilation_config, 'mm_encoder_warmup_batch_sizes') and \
+        # self.compilation_config.mm_encoder_warmup_batch_sizes:
+        #     sizes = [i for i in self.compilation_config.mm_encoder_warmup_batch_sizes if i <= max_batch_size * 2]
+        #     return sorted(set(sizes))
+        return [i for i in range(1, max_batch_size + 1)]
+
     def profile_run(self) -> None:
         # Profile with multimodal encoder & encoder cache.
         if self.supports_mm_inputs:
@@ -3340,6 +3347,44 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     dummy_modality = mm_budget.get_modality_with_max_tokens()
                     max_mm_items_per_batch = mm_budget \
                         .max_items_per_batch_by_modality[dummy_modality]
+
+                    # HINT: encoder warmup with dynamic batch sizes
+                    warmup_batch_sizes = self._get_mm_encoder_warmup_sizes(
+                        max_mm_items_per_batch
+                    )
+
+                    logger.info(
+                        "Warming up multimodal encoder with batch sizes: %s",
+                        warmup_batch_sizes
+                    )
+
+                    encoder_warmup_start_time = time.time()
+
+                    for batch_size in warmup_batch_sizes:
+                        logger.info(
+                            "Warming up multimodal encoder with %d %s items",
+                            batch_size,
+                            dummy_modality,
+                        )
+
+                        # Create dummy batch of multimodal inputs.
+                        batched_dummy_mm_inputs = self._get_mm_dummy_batch(
+                            dummy_modality,
+                            batch_size,
+                        )
+
+                        # Run multimodal encoder to trigger compilation.
+                        dummy_encoder_outputs = \
+                            self.model.get_multimodal_embeddings(
+                            **batched_dummy_mm_inputs)
+
+                        logger.info(
+                            "Warming up multimodal encoder with %d %s items finished",
+                            batch_size,
+                            dummy_modality,
+                        )
+                    warmup_time = time.time() - encoder_warmup_start_time
+                    logger.info("Compiling multimodal encoder for dynamic batch sizes takes %.2f s", warmup_time)
 
                     logger.info(
                         "Encoder cache will be initialized with a budget of "
