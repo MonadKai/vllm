@@ -3323,9 +3323,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         return self._dummy_pooler_run_task(hidden_states, max_task)
 
     def _get_mm_encoder_warmup_sizes(self, max_batch_size: int) -> list[int]:
-        # if hasattr(self.compilation_config, 'mm_encoder_warmup_batch_sizes') and \
-        # self.compilation_config.mm_encoder_warmup_batch_sizes:
-        #     sizes = [i for i in self.compilation_config.mm_encoder_warmup_batch_sizes if i <= max_batch_size * 2]
+        # if hasattr(self.model_config.multimodal_config, 'mm_encoder_warmup_batch_sizes') and \
+        # self.model_config.multimodal_config.mm_encoder_warmup_batch_sizes:
+        #     sizes = [i for i in self.model_config.multimodal_config.mm_encoder_warmup_batch_sizes if i <= max_batch_size * 2]
         #     return sorted(set(sizes))
         return [i for i in range(1, max_batch_size + 1)]
 
