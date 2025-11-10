@@ -31,4 +31,8 @@ COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-
 COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
 COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
 
+# add vllm mm encoder warmup support
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
+# COPY vllm/config/multimodal.py /usr/local/lib/python3.12/dist-packages/vllm/config/multimodal.py
+
 ENTRYPOINT ["vllm", "serve"]
