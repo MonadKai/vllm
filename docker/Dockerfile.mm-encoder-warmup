@@ -1,0 +1,10 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.11.0
+
+# add audio support
+RUN pip install librosa==0.11.0
+
+# add vllm mm encoder warmup support
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
+COPY vllm/config/multimodal.py /usr/local/lib/python3.12/dist-packages/vllm/config/multimodal.py
+
+ENTRYPOINT ["vllm", "serve"]
