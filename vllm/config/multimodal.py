@@ -78,6 +78,13 @@ class MultiModalConfig:
     This reduces engine startup time but shifts the responsibility to users for
     estimating the peak memory usage of the activation of multimodal encoder and
     embedding cache."""
+    mm_encoder_warmup_batch_sizes: Optional[list[int]] = None
+    """
+    The batch sizes to warm up the multimodal encoder.
+    When enabled, warm up the multimodal encoder with the given batch sizes
+    during engine initialization.
+    """
+
     video_pruning_rate: Optional[float] = None
     """Sets pruning rate for video pruning via Efficient Video Sampling.
     Value sits in range [0;1) and determines fraction of media tokens
