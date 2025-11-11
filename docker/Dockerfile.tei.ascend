@@ -1,0 +1,12 @@
+FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.9.1
+
+
+# add vllm kubernetes plugin support
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# add vllm tei support
+COPY vllm/entrypoints/tei /vllm-workspace/vllm/vllm/entrypoints/tei
+COPY vllm/entrypoints/openai/api_server.py /vllm-workspace/vllm/vllm/entrypoints/openai/api_server.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
