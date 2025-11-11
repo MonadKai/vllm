@@ -77,6 +77,8 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               TranslationRequest,
                                               TranslationResponse,
                                               UnloadLoRAAdapterRequest)
+from vllm.entrypoints.tei.protocol import EmbedRequest as TeiEmbedRequest
+from vllm.entrypoints.tei.protocol import RerankRequest as TeiRerankRequest
 # yapf: enable
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_classification import (
@@ -94,6 +96,8 @@ from vllm.entrypoints.openai.serving_tokenization import (
     OpenAIServingTokenization)
 from vllm.entrypoints.openai.serving_transcription import (
     OpenAIServingTranscription, OpenAIServingTranslation)
+from vllm.entrypoints.tei.serving_tei_embed import TeiServingEmbed
+from vllm.entrypoints.tei.serving_tei_rerank import TeiServingRerank
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.entrypoints.tool_server import (DemoToolServer, MCPToolServer,
                                           ToolServer)
@@ -250,6 +254,7 @@ async def validate_json_request(raw_request: Request):
 
 
 router = APIRouter()
+tei_router = APIRouter(prefix="/tei")
 
 
 class PrometheusResponse(Response):
@@ -340,6 +345,14 @@ def translation(request: Request) -> OpenAIServingTranslation:
 
 def engine_client(request: Request) -> EngineClient:
     return request.app.state.engine_client
+
+
+def tei_embed(request: Request) -> Optional[TeiServingEmbed]:
+    return request.app.state.tei_serving_embed
+
+
+def tei_rerank(request: Request) -> Optional[TeiServingRerank]:
+    return request.app.state.tei_serving_rerank
 
 
 @router.get("/health", response_class=Response)
@@ -1121,6 +1134,53 @@ async def is_scaling_elastic_ep(raw_request: Request):
     return JSONResponse({"is_scaling_elastic_ep": _scaling_elastic_ep})
 
 
+@tei_router.post(
+    "/embed",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_embed(request: TeiEmbedRequest, raw_request: Request):
+    handler = tei_embed(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support TEI Embed API"
+        )
+
+    generator = await handler.embed(request, raw_request)
+
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)
+
+
+@tei_router.post(
+    "/rerank",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_rerank(request: TeiRerankRequest, raw_request: Request):
+    handler = tei_rerank(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support TEI Rerank API"
+        )
+
+    generator = await handler.rerank(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)
+
+
 # TODO: RequestType = TypeForm[BaseModel] when recognized by type checkers
 # (requires typing_extensions >= 4.13)
 RequestType = Any
@@ -1517,6 +1577,7 @@ def build_app(args: Namespace) -> FastAPI:
     else:
         app = FastAPI(lifespan=lifespan)
     app.include_router(router)
+    app.include_router(tei_router)
     app.root_path = args.root_path
 
     mount_metrics(app)
@@ -1756,6 +1817,15 @@ async def init_app_state(
         chat_template_content_format=args.chat_template_content_format,
         log_error_stack=args.log_error_stack,
     ) if "embed" in supported_tasks else None
+    state.tei_serving_embed = TeiServingEmbed(
+        engine_client,
+        model_config,
+        state.openai_serving_models,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        log_error_stack=args.log_error_stack,
+    ) if "embed" in supported_tasks else None
     state.openai_serving_classification = ServingClassification(
         engine_client,
         model_config,
@@ -1764,6 +1834,13 @@ async def init_app_state(
         log_error_stack=args.log_error_stack,
     ) if "classify" in supported_tasks else None
     state.openai_serving_scores = ServingScores(
+        engine_client,
+        model_config,
+        state.openai_serving_models,
+        request_logger=request_logger,
+        log_error_stack=args.log_error_stack,
+    ) if ("embed" in supported_tasks or "score" in supported_tasks) else None
+    state.tei_serving_rerank = TeiServingRerank(
         engine_client,
         model_config,
         state.openai_serving_models,
