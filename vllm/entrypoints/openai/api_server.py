@@ -1075,7 +1075,7 @@ if envs.VLLM_ALLOW_RUNTIME_LORA_UPDATING:
 )
 @with_cancellation
 @load_aware_call
-async def embed(request: EmbedRequest, raw_request: Request):
+async def embed(request: TeiEmbedRequest, raw_request: Request):
     handler = tei_embed(raw_request)
     if handler is None:
         return base(raw_request).create_error_response(
@@ -1099,7 +1099,7 @@ async def embed(request: EmbedRequest, raw_request: Request):
 )
 @with_cancellation
 @load_aware_call
-async def rerank(request: RerankRequest, raw_request: Request):
+async def rerank(request: TeiRerankRequest, raw_request: Request):
     handler = tei_rerank(raw_request)
     if handler is None:
         return base(raw_request).create_error_response(
