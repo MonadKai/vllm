@@ -32,7 +32,7 @@ class TeiServingEmbed(OpenAIServingEmbedding):
         request: EmbedRequest,
     ) -> EmbeddingCompletionRequest:
         return EmbeddingCompletionRequest(
-            model=self._get_model_name(None),
+            model=self.models.model_name(),
             input=request.inputs,
             encoding_format="float",
             dimensions=None,
