@@ -8,4 +8,4 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
 COPY vllm/entrypoints/tei /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/tei
 COPY vllm/entrypoints/openai/api_server.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py
 
-ENTRYPOINT ["vllm", "serve"]
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]

@@ -8,4 +8,4 @@ FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.2rc1
 COPY vllm/entrypoints/tei /vllm-workspace/vllm/vllm/entrypoints/tei
 COPY vllm/entrypoints/openai/api_server.py /vllm-workspace/vllm/vllm/entrypoints/openai/api_server.py
 
-ENTRYPOINT ["vllm", "serve"]
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
