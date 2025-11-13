@@ -41,16 +41,18 @@ ARG VLLM_INSTALL_DIR=/usr/local/lib/python${PYTHON_VERSION}/dist-packages/vllm
 # add vllm mixed precision model loader
 COPY vllm/model_executor/model_loader/mixed_precision_loader.py ${VLLM_INSTALL_DIR}/model_executor/model_loader/mixed_precision_loader.py
 COPY vllm/model_executor/model_loader/__init__.py ${VLLM_INSTALL_DIR}/model_executor/model_loader/__init__.py
-COPY vllm/config.py ${VLLM_INSTALL_DIR}/config.py
+# vllm hygon's config.py is different from the original vllm, so we need to patch it
+COPY docker/vllm_patch/config.py ${VLLM_INSTALL_DIR}/config.py
 COPY vllm/inputs/registry.py ${VLLM_INSTALL_DIR}/inputs/registry.py
 
 # add vllm parrot audio support
 COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
 RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
 
-COPY vllm/model_executor/models/parrot_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot_audio.py
-COPY vllm/model_executor/models/parrot2_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio.py
-COPY vllm/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
-COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+COPY vllm/model_executor/models/parrot_audio.py ${VLLM_INSTALL_DIR}/model_executor/models/parrot_audio.py
+COPY vllm/model_executor/models/parrot2_audio.py ${VLLM_INSTALL_DIR}/model_executor/models/parrot2_audio.py
+COPY vllm/model_executor/models/parrot2_audio_moe.py ${VLLM_INSTALL_DIR}/model_executor/models/parrot2_audio_moe.py
+COPY vllm/model_executor/models/registry.py ${VLLM_INSTALL_DIR}/model_executor/models/registry.py
 
+# TODO: still some problems with the parrot audio support, need to fix it later
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
