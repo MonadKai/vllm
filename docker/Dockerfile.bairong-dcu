@@ -1,4 +1,9 @@
-FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5-ubuntu22.04-dtk25.04.1-rc5-das1.6-py3.10-20250724
+# for ubuntu22.04, use image tag v0.8.5.post1-20250724-rc5
+FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5.post1-ubuntu22.04-dtk25.04.1-rc5-das1.6-py3.10-20250724
+
+
+# for rockylinux8.6, use image tag v0.8.5.post1-20250724-rc3
+# FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5-rockylinux8.6-dtk25.04.1-rc3-das1.6-py3.10-20250724-shca
 
 # incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
