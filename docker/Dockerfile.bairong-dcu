@@ -1,7 +1,5 @@
 FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5-ubuntu22.04-dtk25.04.1-rc5-das1.6-py3.10-20250724
 
-LABEL maintainer="kai.liu <kai.liu@brgroup.com>"
-
 # incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # `torchaudio` already installed in base image
@@ -11,26 +9,26 @@ RUN pip install librosa
 COPY dist/transformers-4.51.3.tar.gz /tmp/transformers-4.51.3.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.51.3.tar.gz --no-deps && rm -rf /tmp/transformers-4.51.3.tar.gz
 
+# add vllm kubernetes plugin support
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
 # add parrot commons support
 COPY dist/parrot_commons-0.1.0.tar.gz /tmp/parrot_commons-0.1.0.tar.gz
 RUN pip install /tmp/parrot_commons-0.1.0.tar.gz --no-deps && rm -rf /tmp/parrot_commons-0.1.0.tar.gz
-
-# add vllm kubernetes plugin support
-COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
-RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
 
 # add vllm parrot audio support
 COPY docker/vllm_patch/model_executor/model_loader/mixed_precision_utils.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/model_loader/mixed_precision_utils.py
 COPY docker/vllm_patch/model_executor/model_loader/loader.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/model_loader/loader.py
 
+# add vllm parrot audio support
 COPY docker/vllm_patch/model_executor/models/parrot_audio.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot_audio.py
 COPY docker/vllm_patch/model_executor/models/parrot2_audio.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot2_audio.py
 # COPY docker/vllm_patch/model_executor/models/parrot2_audio_moe.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/parrot2_audio_moe.py
-
 COPY docker/vllm_patch/model_executor/models/registry.py /usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py
 
-COPY docker/vllm_patch/entrypoints/chat_utils.py /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/chat_utils.py
 
+COPY docker/vllm_patch/entrypoints/chat_utils.py /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/chat_utils.py
 COPY docker/vllm_patch/v1/executor/multiproc_executor.py /usr/local/lib/python3.10/dist-packages/vllm/v1/executor/multiproc_executor.py
 
 
