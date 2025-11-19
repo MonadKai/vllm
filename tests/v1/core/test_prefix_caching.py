@@ -76,7 +76,7 @@ def make_kv_cache_config(block_size: int, num_blocks: int) -> KVCacheConfig:
         kv_cache_groups=[
             KVCacheGroupSpec(
                 ["layer"],
-                FullAttentionSpec(block_size, 1, 1, torch.float32),
+                FullAttentionSpec(block_size, 1, 1, torch.float32, False),
             )
         ],
     )
@@ -90,7 +90,7 @@ def make_kv_cache_config_hybrid_model(block_size: int,
         kv_cache_groups=[
             KVCacheGroupSpec(
                 ["layer1"],
-                FullAttentionSpec(block_size, 1, 1, torch.float32),
+                FullAttentionSpec(block_size, 1, 1, torch.float32, False),
             ),
             KVCacheGroupSpec(
                 ["layer2"],
@@ -98,6 +98,7 @@ def make_kv_cache_config_hybrid_model(block_size: int,
                                   1,
                                   1,
                                   torch.float32,
+                                  False,
                                   sliding_window=2 * block_size),
             ),
             KVCacheGroupSpec(
@@ -106,6 +107,7 @@ def make_kv_cache_config_hybrid_model(block_size: int,
                                   1,
                                   1,
                                   torch.float32,
+                                  False,
                                   sliding_window=2 * block_size),
             ),
         ],
@@ -1336,6 +1338,7 @@ def test_eagle_with_sliding_window():
         head_size=1,
         dtype=torch.float32,
         sliding_window=block_size,
+        use_mla=False,
     )
     manager = KVCacheManager(
         KVCacheConfig(

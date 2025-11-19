@@ -38,6 +38,7 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
         super().__init__()
 
         model_config = vllm_config.model_config
+        cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
         config: Qwen3NextConfig = model_config.hf_config
@@ -67,8 +68,11 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
 
         self.layers = torch.nn.ModuleList(
             Qwen3NextDecoderLayer(
-                vllm_config,
+                config,
                 layer_type="full_attention",
+                model_config=model_config,
+                cache_config=cache_config,
+                quant_config=quant_config,
                 prefix=f'{prefix}.layers.{idx}',
             ) for idx in range(self.num_mtp_layers))
 

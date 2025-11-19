@@ -28,12 +28,11 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
 
     def __init__(
         self,
-        vllm_config: VllmConfig,
+        config: LlamaConfig,
         disable_input_layernorm: bool,
         prefix: str = "",
-        config: Optional[LlamaConfig] = None,
     ) -> None:
-        super().__init__(vllm_config, prefix=prefix, config=config)
+        super().__init__(config, prefix=prefix)
 
         # Skip the input_layernorm
         # https://github.com/SafeAILab/EAGLE/blob/35c78f6cdc19a73e05cf5c330b4c358dad970c6a/eagle/model/cnets.py#L427
@@ -65,10 +64,9 @@ class LlamaModel(nn.Module):
 
         self.layers = nn.ModuleList([
             LlamaDecoderLayer(
-                vllm_config,
+                self.config,
                 i == 0,
                 prefix=maybe_prefix(prefix, f"layers.{i + start_layer_id}"),
-                config=self.config,
             ) for i in range(self.config.num_hidden_layers)
         ])
         self.fc = torch.nn.Linear(self.config.hidden_size * 2,

@@ -308,7 +308,6 @@ class FlashDecoderLayer(nn.Module):
 
     def __init__(
         self,
-        vllm_config: VllmConfig,
         config: FlashConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
@@ -330,7 +329,6 @@ class FlashDecoderLayer(nn.Module):
         # Dual attention structure
         self.self_attn = nn.ModuleList([
             DeepseekV2MLAAttention(
-                vllm_config=vllm_config,
                 config=config,
                 hidden_size=self.hidden_size,
                 num_heads=config.num_attention_heads,
@@ -456,7 +454,6 @@ class FlashModel(nn.Module):
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
             lambda prefix: FlashDecoderLayer(
-                vllm_config,
                 config,
                 cache_config=cache_config,
                 quant_config=quant_config,

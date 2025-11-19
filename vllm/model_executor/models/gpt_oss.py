@@ -13,8 +13,7 @@ from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (get_ep_group, get_pp_group,
                               get_tensor_model_parallel_rank,
-                              get_tensor_model_parallel_world_size,
-                              tensor_model_parallel_all_gather)
+                              get_tensor_model_parallel_world_size)
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (QKVParallelLinear,
@@ -25,7 +24,6 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.sequence import IntermediateTensors
 from vllm.utils import cdiv
 
@@ -134,18 +132,12 @@ class MLPBlock(torch.nn.Module):
 
     def __init__(
         self,
-        vllm_config: VllmConfig,
+        config: GptOssConfig,
         layer_idx: int,
+        quant_config: QuantizationConfig,
         prefix: str = "",
     ):
         super().__init__()
-
-        config = vllm_config.model_config.hf_config
-        quant_config = vllm_config.quant_config
-        parallel_config = vllm_config.parallel_config
-
-        self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
-
         self.layer_idx = layer_idx
         self.num_experts = config.num_local_experts
         self.experts_per_token = config.num_experts_per_tok
@@ -163,20 +155,11 @@ class MLPBlock(torch.nn.Module):
                                 prefix=f"{prefix}.experts",
                                 apply_router_weight_on_input=False,
                                 has_bias=True,
-                                activation="swigluoai",
-                                is_sequence_parallel=self.is_sequence_parallel)
+                                activation="swigluoai")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        num_tokens = x.shape[0]
-        if self.is_sequence_parallel:
-            x = sequence_parallel_chunk(x)
-
         g = self.router(x)
         x = self.experts(hidden_states=x, router_logits=g)
-
-        if self.is_sequence_parallel:
-            x = tensor_model_parallel_all_gather(x.contiguous(), 0)
-            x = x[:num_tokens]
         return x
 
 
@@ -184,20 +167,19 @@ class TransformerBlock(torch.nn.Module):
 
     def __init__(
         self,
-        vllm_config: VllmConfig,
+        config: GptOssConfig,
+        cache_config: CacheConfig,
+        quant_config: QuantizationConfig,
         prefix: str = "",
     ):
         super().__init__()
-
-        config = vllm_config.model_config.hf_config
-        cache_config = vllm_config.cache_config
-
         self.layer_idx = extract_layer_index(prefix)
         self.attn = OAIAttention(config,
                                  prefix=f"{prefix}.attn",
                                  cache_config=cache_config)
-        self.mlp = MLPBlock(vllm_config,
+        self.mlp = MLPBlock(config,
                             self.layer_idx,
+                            quant_config=quant_config,
                             prefix=f"{prefix}.mlp")
         self.input_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
@@ -234,6 +216,8 @@ class GptOssModel(nn.Module):
     ):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
+        self.cache_config = vllm_config.cache_config
+        self.quant_config = vllm_config.quant_config
         self.parallel_config = vllm_config.parallel_config
         self.config.hidden_size = self.config.hidden_size
         self.embedding = VocabParallelEmbedding(
@@ -243,7 +227,9 @@ class GptOssModel(nn.Module):
         self.start_layer, self.end_layer, self.layers = make_layers(
             self.config.num_hidden_layers,
             lambda prefix: TransformerBlock(
-                vllm_config,
+                self.config,
+                cache_config=self.cache_config,
+                quant_config=self.quant_config,
                 prefix=prefix,
             ),
             prefix=f"{prefix}.layers",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
-from typing import ClassVar, List, Optional
+from typing import List, Optional
 
 import torch
 
@@ -11,8 +11,8 @@ from vllm.attention.backends.abstract import (AttentionBackend,
 from vllm.attention.selector import get_attn_backend
 from vllm.config import CacheConfig, QuantizationConfig
 from vllm.v1.attention.backends.utils import (
-    AttentionCGSupport, CommonAttentionMetadata,
-    make_local_attention_virtual_batches, subclass_attention_backend)
+    CommonAttentionMetadata, make_local_attention_virtual_batches,
+    subclass_attention_backend)
 
 from ..layer import Attention
 
@@ -28,8 +28,6 @@ def create_chunked_local_attention_backend(
     underlying_builder = underlying_attn_backend.get_builder_cls()
 
     class ChunkedLocalAttentionBuilder(underlying_builder):  # type: ignore
-        cudagraph_support: ClassVar[AttentionCGSupport] = \
-            AttentionCGSupport.NEVER
 
         def build(self,
                   common_prefix_len: int,
