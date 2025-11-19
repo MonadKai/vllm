@@ -1,7 +1,5 @@
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.8.5.post1
 
-LABEL maintainer="kai.liu <kai.liu@brgroup.com>"
-
 # incase you want to use tsinghua mirror, you can add --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # `torchaudio` already installed in base image
