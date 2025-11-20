@@ -1,8 +1,6 @@
 # support the newer version of vllm/vllm-openai:v0.10.0
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.0
 
-LABEL maintainer="kai.liu <kai.liu@brgroup.com>"
-
 # HINT: the newer version of vllm==0.10.1.dev1 is based on transformers==4.54.1
 # add transformers parrot audio support
 COPY dist/transformers-4.54.1.tar.gz /tmp/transformers-4.54.1.tar.gz
