@@ -22,33 +22,59 @@
 # limitations under the License.
 """Inference-only Parrot-Audio model compatible with HuggingFace weights."""
 
+import copy
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Annotated, Any, Literal, TypeAlias
 
 import torch
 import torch.nn as nn
+from parrot_commons import _get_feat_extract_output_lengths
+from parrot_commons.multi_modal_projector import LinearAdaptor
+from parrot_commons.sense_voice_small import SenseVoiceEncoderSmall
 from transformers import BatchFeature
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceEncoder as TransformersParrotAudioEncoder
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceFeatureExtractor as ParrotAudioFeatureExtractor
-from transformers.models.parrot_sensevoice import ParrotSenseVoiceProcessor as ParrotAudioProcessor
 from transformers.models.parrot_audio import ParrotAudioConfig
 from transformers.models.parrot_audio import (
-    ParrotAudioMultiModalProjector as TransformersParrotAudioMultiModalProjector
+    ParrotAudioMultiModalProjector as TransformersParrotAudioMultiModalProjector,
 )
+from transformers.models.parrot_sensevoice import (
+    ParrotSenseVoiceEncoder as TransformersParrotAudioEncoder,
+)
+from transformers.models.parrot_sensevoice import (
+    ParrotSenseVoiceFeatureExtractor as ParrotAudioFeatureExtractor,
+)
+from transformers.models.parrot_sensevoice import (
+    ParrotSenseVoiceProcessor as ParrotAudioProcessor,
+)
+
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
+from vllm.config.compilation import CompilationMode
 from vllm.config.multimodal import BaseDummyOptions
+from vllm.forward_context import set_forward_context
+from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.inputs import (AudioItem, ModalityData,
-                                    MultiModalDataDict, MultiModalFieldConfig,
-                                    MultiModalKwargsItems)
-from vllm.multimodal.parse import (AudioProcessorItems, DictEmbeddingItems,
-                                   ModalityDataItems, MultiModalDataItems,
-                                   MultiModalDataParser)
-from vllm.multimodal.processing import (BaseMultiModalProcessor,
-                                        BaseProcessingInfo, PromptReplacement,
-                                        PromptUpdate, PromptUpdateDetails)
+from vllm.multimodal.inputs import (
+    AudioItem,
+    ModalityData,
+    MultiModalDataDict,
+    MultiModalFieldConfig,
+    MultiModalKwargsItems,
+)
+from vllm.multimodal.parse import (
+    AudioProcessorItems,
+    DictEmbeddingItems,
+    ModalityDataItems,
+    MultiModalDataItems,
+    MultiModalDataParser,
+)
+from vllm.multimodal.processing import (
+    BaseMultiModalProcessor,
+    BaseProcessingInfo,
+    PromptReplacement,
+    PromptUpdate,
+    PromptUpdateDetails,
+)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
@@ -56,9 +82,12 @@ from vllm.utils.tensor_schema import TensorSchema, TensorShape
 from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP
 from .utils import AutoWeightsLoader, init_vllm_registered_model, maybe_prefix
 
-from parrot_commons import _get_feat_extract_output_lengths
-from parrot_commons.multi_modal_projector import LinearAdaptor
-from parrot_commons.sense_voice_small import SenseVoiceEncoderSmall
+logger = init_logger(__name__)
+
+
+def should_vllm_compile_mm_encoder(vllm_config: VllmConfig) -> bool:
+    """Callable to be passed to `@support_torch_compile`'s `enable_if` argument."""
+    return vllm_config.compilation_config.compile_mm_encoder
 
 
 # # === Audio Inputs === #
@@ -68,6 +97,7 @@ class ParrotAudioFeatureInputs(TensorSchema):
         - na: Number of audios
         - nmb: Number of mel bins
     """
+
     type: Literal["audio_features"]
     input_features: Annotated[
         torch.Tensor | list[torch.Tensor],
@@ -88,6 +118,7 @@ class ParrotAudioEmbeddingInputs(TensorSchema):
         - hs: Hidden size (must match the hidden size of language model
           backbone)
     """
+
     type: Literal["audio_embeds"] = "audio_embeds"
 
     audio_embeds: Annotated[
@@ -112,10 +143,7 @@ class ParrotAudioProcessingInfo(BaseProcessingInfo):
     ) -> ParrotAudioProcessor:
         return self.ctx.get_hf_processor(ParrotAudioProcessor, **kwargs)
 
-    def get_feature_extractor(
-        self,
-        **kwargs: object
-    ) -> ParrotAudioFeatureExtractor:
+    def get_feature_extractor(self, **kwargs: object) -> ParrotAudioFeatureExtractor:
         hf_processor = self.get_hf_processor(**kwargs)
         feature_extractor = hf_processor.feature_extractor  # type: ignore
         assert isinstance(feature_extractor, ParrotAudioFeatureExtractor)
@@ -302,7 +330,10 @@ class ParrotAudioMultiModalProcessor(
         ]
 
 
-# @support_torch_compile(dynamic_arg_dims={"input_features": 0, "audio_feature_lengths": 0})
+@support_torch_compile(
+    dynamic_arg_dims={"input_features": 0, "audio_feature_lengths": 0},
+    enable_if=should_vllm_compile_mm_encoder,
+)
 class ParrotAudioEncoder(nn.Module):
     """
     ParrotSenseVoiceEncoder
@@ -345,7 +376,10 @@ class ParrotAudioEncoder(nn.Module):
         return xs_pad, olens
 
 
-# @support_torch_compile(dynamic_arg_dims={"audio_features": 0})
+@support_torch_compile(
+    dynamic_arg_dims={"audio_features": 0},
+    enable_if=should_vllm_compile_mm_encoder,
+)
 class ParrotAudioMultiModalProjector(nn.Module):
     def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -375,7 +409,7 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("audio"):
-            return  "<|vision_start|>[FAKE_AUDIO]<|vision_end|>"
+            return "<|vision_start|>[FAKE_AUDIO]<|vision_end|>"
 
         raise ValueError("Only audio modality is supported")
 
@@ -388,6 +422,17 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         quant_config = vllm_config.quant_config
         multimodal_config = vllm_config.model_config.multimodal_config
         self.config = config
+        self.vllm_config = vllm_config
+        mm_encoder_vllm_config = copy.deepcopy(vllm_config)
+        if (
+            mm_encoder_vllm_config.compilation_config.mode
+            == CompilationMode.VLLM_COMPILE
+        ):
+            raise ValueError(
+                "VLLM_COMPILE is not supported for parrot_audio's mm_encoder, please use DYNAMO_TRACE_ONCE or STOCK_TORCH_COMPILE instead"
+            )
+        self.mm_encoder_vllm_config = mm_encoder_vllm_config
+
         self.multimodal_config = multimodal_config
 
         self.audio_tower_dtype = config.audio_config.torch_dtype
@@ -396,8 +441,6 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
                 self.audio_tower = TransformersParrotAudioEncoder(config.audio_config)
             else:
                 self.audio_tower = ParrotAudioEncoder(vllm_config=vllm_config)
-            if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
-                self.audio_tower.forward = torch.compile(self.audio_tower.forward)
 
         self.multi_modal_projector_dtype = self.audio_tower_dtype
         with set_default_torch_dtype(self.audio_tower_dtype):
@@ -411,10 +454,6 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
             else:
                 self.multi_modal_projector = ParrotAudioMultiModalProjector(
                     vllm_config=vllm_config
-                )
-            if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
-                self.multi_modal_projector.forward = torch.compile(
-                    self.multi_modal_projector.forward
                 )
 
         self.quant_config = quant_config
@@ -438,17 +477,23 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
         self, **kwargs: object
     ) -> ParrotAudioInputs | None:
         input_features = kwargs.pop("input_features", None)
-        audio_embeds = kwargs.pop('audio_embeds', None)
+        audio_embeds = kwargs.pop("audio_embeds", None)
         feature_attention_mask = kwargs.pop("feature_attention_mask", None)
 
         if input_features is None and audio_embeds is None:
             return None
 
         if audio_embeds is not None:
-            return ParrotAudioEmbeddingInputs(type="audio_embeds", audio_embeds=audio_embeds)
+            return ParrotAudioEmbeddingInputs(
+                type="audio_embeds", audio_embeds=audio_embeds
+            )
 
         if input_features is not None:
-            return ParrotAudioFeatureInputs(type="audio_features", input_features=input_features, feature_attention_mask=feature_attention_mask)
+            return ParrotAudioFeatureInputs(
+                type="audio_features",
+                input_features=input_features,
+                feature_attention_mask=feature_attention_mask,
+            )
         raise AssertionError("This line should be unreachable.")
 
     def _process_audio_input(
@@ -467,14 +512,18 @@ class ParrotAudioForConditionalGeneration(nn.Module, SupportsMultiModal, Support
 
         input_features = input_features.to(self.audio_tower_dtype)
 
-        audio_outputs = self.audio_tower(
-            input_features, audio_feature_lengths=audio_feat_lengths
-        )
+        with set_forward_context(None, self.mm_encoder_vllm_config):
+            audio_outputs = self.audio_tower(
+                input_features, audio_feature_lengths=audio_feat_lengths
+            )
         selected_audio_feature = audio_outputs[0]
 
-        selected_audio_feature = selected_audio_feature.to(self.multi_modal_projector_dtype)
+        selected_audio_feature = selected_audio_feature.to(
+            self.multi_modal_projector_dtype
+        )
 
-        audio_features = self.multi_modal_projector(selected_audio_feature)
+        with set_forward_context(None, self.mm_encoder_vllm_config):
+            audio_features = self.multi_modal_projector(selected_audio_feature)
         num_audios, max_audio_tokens, embed_dim = audio_features.shape
         audio_output_lengths = audio_output_lengths.unsqueeze(1)
         audio_features_mask = (
