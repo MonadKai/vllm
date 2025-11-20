@@ -351,7 +351,9 @@ _MULTIMODAL_MODELS = {
         "paligemma",
         "PaliGemmaForConditionalGeneration",
     ),
-    "ParrotAudioForConditionalGeneration": ("parrot_audio", "ParrotAudioForConditionalGeneration"),
+    "ParrotAudioForConditionalGeneration": ("parrot_audio", "ParrotAudioForConditionalGeneration"),  # noqa: E501
+    "Parrot2AudioForConditionalGeneration": ("parrot2_audio", "Parrot2AudioForConditionalGeneration"),  # noqa: E501
+    "Parrot2AudioMoeForConditionalGeneration": ("parrot2_audio_moe", "Parrot2AudioMoeForConditionalGeneration"),  # noqa: E501
     "Phi3VForCausalLM": ("phi3v", "Phi3VForCausalLM"),
     "Phi4MMForCausalLM": ("phi4mm", "Phi4MMForCausalLM"),
     "Phi4MultimodalForCausalLM": ("phi4_multimodal", "Phi4MultimodalForCausalLM"),  # noqa: E501
