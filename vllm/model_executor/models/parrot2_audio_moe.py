@@ -78,9 +78,17 @@ from vllm.multimodal.processing import (
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 
-from parrot_commons import ParrotAudioInputs, _get_feat_extract_output_lengths
+from parrot_commons import _get_feat_extract_output_lengths
 from parrot_commons.multi_modal_projector import LinearAdaptor
 from parrot_commons.sense_voice_small import SenseVoiceEncoderSmall
+
+
+class ParrotAudioInputs(TypedDict):
+    input_features: torch.Tensor
+    """Shape: `(num_audios, num_mel_bins, 3000)`"""
+
+    feature_attention_mask: torch.Tensor
+    """Shape: `(num_audios, 3000)`"""
 
 
 class Parrot2AudioMoeProcessingInfo(BaseProcessingInfo):
