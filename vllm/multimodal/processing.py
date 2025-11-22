@@ -1029,8 +1029,22 @@ class InputProcessingContext:
             if isinstance(x, torch.Tensor):  # noqa: SIM102
                 # This mimics the behavior of transformers.BatchFeature
                 if x.is_floating_point():
-                    x = x.to(dtype=self.model_config.dtype)
+                    default_dtype = self.model_config.dtype
+                    hf_config = self.model_config.hf_config
+                    if hasattr(hf_config, "audio_config"):
+                        if hasattr(hf_config.audio_config, "torch_dtype"):
+                            dtype = hf_config.audio_config.torch_dtype
+                        else:
+                            dtype = default_dtype
+                    elif hasattr(hf_config, "vision_config"):
+                        if hasattr(hf_config.vision_config, "torch_dtype"):
+                            dtype = hf_config.vision_config.torch_dtype
+                        else:
+                            dtype = default_dtype
+                    else:
+                        dtype = default_dtype
 
+                    return x.to(dtype=dtype)
             return x
 
         return json_map_leaves(_postprocess_one, output)
