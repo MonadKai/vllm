@@ -145,6 +145,14 @@ class MultiModalConfig:
     from each video to be pruned.
     """
 
+    mm_encoder_warmup_batch_sizes: list[int] | None = Field(default_factory=list)
+    """
+    The batch sizes to warm up the multimodal encoder.
+    When enabled, warm up the multimodal encoder with the given batch sizes
+    during engine initialization.
+    """
+
+
     @field_validator("limit_per_prompt", mode="before")
     @classmethod
     def _validate_limit_per_prompt(
