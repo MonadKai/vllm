@@ -474,6 +474,7 @@ class EngineArgs:
     io_processor_plugin: str | None = None
     skip_mm_profiling: bool = MultiModalConfig.skip_mm_profiling
     video_pruning_rate: float = MultiModalConfig.video_pruning_rate
+    mm_encoder_warmup_batch_sizes: list[int] | None = MultiModalConfig.mm_encoder_warmup_batch_sizes
     # LoRA fields
     enable_lora: bool = False
     max_loras: int = LoRAConfig.max_loras
@@ -987,6 +988,9 @@ class EngineArgs:
         multimodal_group.add_argument(
             "--video-pruning-rate", **multimodal_kwargs["video_pruning_rate"]
         )
+        multimodal_group.add_argument(
+            "--mm-encoder-warmup-batch-sizes", **multimodal_kwargs["mm_encoder_warmup_batch_sizes"]
+        )
 
         # LoRA related configs
         lora_kwargs = get_kwargs(LoRAConfig)
@@ -1263,6 +1267,7 @@ class EngineArgs:
             logits_processors=self.logits_processors,
             video_pruning_rate=self.video_pruning_rate,
             io_processor_plugin=self.io_processor_plugin,
+            mm_encoder_warmup_batch_sizes=self.mm_encoder_warmup_batch_sizes,
         )
 
     def validate_tensorizer_args(self):

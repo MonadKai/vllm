@@ -11,6 +11,12 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.11.2
 # add audio support
 RUN pip install librosa==0.11.0
 
+# add vllm mm encoder warmup support
+COPY vllm/config/model.py /usr/local/lib/python3.12/dist-packages/vllm/config/model.py
+COPY vllm/config/multimodal.py /usr/local/lib/python3.12/dist-packages/vllm/config/multimodal.py
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
+COPY vllm/engine/arg_utils.py /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py
+
 # add transformers parrot audio support
 COPY dist/transformers-4.57.1.tar.gz /tmp/transformers-4.57.1.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.57.1.tar.gz --no-deps && rm -rf /tmp/transformers-4.57.1.tar.gz

@@ -307,6 +307,7 @@ class ModelConfig:
     interleave_mm_strings: InitVar[bool | None] = None
     skip_mm_profiling: InitVar[bool | None] = None
     video_pruning_rate: InitVar[float | None] = None
+    mm_encoder_warmup_batch_sizes: InitVar[list[int] | None] = None
 
     def compute_hash(self) -> str:
         """
@@ -425,6 +426,7 @@ class ModelConfig:
         interleave_mm_strings: bool | None,
         skip_mm_profiling: bool | None,
         video_pruning_rate: float | None,
+        mm_encoder_warmup_batch_sizes: list[int] | None,
     ) -> None:
         # Set the default seed to 0 in V1.
         # NOTE(woosuk): In V1, we use separate processes for workers (unless
@@ -693,6 +695,7 @@ class ModelConfig:
                 interleave_mm_strings=interleave_mm_strings,
                 skip_mm_profiling=skip_mm_profiling,
                 video_pruning_rate=video_pruning_rate,
+                mm_encoder_warmup_batch_sizes=mm_encoder_warmup_batch_sizes,
             )
 
             mm_config_kwargs = {
