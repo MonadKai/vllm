@@ -1,5 +1,6 @@
-# for ubuntu22.04, use image tag v0.9.2-20250810-rc5
-FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.1-rc5-rocblas101839-das1.6-py3.10-20250810-alpha
+# HINT: use image tag v0.9.2-20250812-beta
+# HINT: there is some issue with base image `image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.1-rc5-rocblas101839-das1.6-py3.10-20250810-alpha`
+FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.1-rc5-rocblas101839-0811-das1.6-py3.10-20250812-beta
 
 # HINT:
 # `torchaudio` already installed in base image, but version is not consistent with torch
