@@ -18,6 +18,7 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import (ChatTemplateContentFormatOption,
                                          ConversationMessage)
 from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.openai.log_request_response_utils import serialize_request_without_media
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionLogProb, ChatCompletionLogProbs,
     ChatCompletionLogProbsContent, ChatCompletionNamedToolChoiceParam,
@@ -202,7 +203,9 @@ class OpenAIServingChat(OpenAIServing):
 
         request_id = "chatcmpl-" \
                      f"{self._base_request_id(raw_request, request.request_id)}"
-
+        logger.info(
+            f"[request_id={request_id}] Request body of {raw_request.url.path}:\n{json.dumps(serialize_request_without_media(request), ensure_ascii=False, indent=2)}"
+        )
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
@@ -848,6 +851,10 @@ class OpenAIServingChat(OpenAIServing):
                         )
 
                     data = chunk.model_dump_json(exclude_unset=True)
+                    if output.index % 10 == 0:
+                        logger.info(
+                            f"[request_id={request_id}] Streaming response of /v1/chat/completions ({output.index}-th output, {i}-th choice):\n{data}"
+                        )
                     yield f"data: {data}\n\n"
 
             # once the final token is handled, if stream_options.include_usage
@@ -871,6 +878,9 @@ class OpenAIServingChat(OpenAIServing):
                     usage=final_usage)
                 final_usage_data = (final_usage_chunk.model_dump_json(
                     exclude_unset=True, exclude_none=True))
+                logger.info(
+                    f"[request_id={request_id}] Streaming response of /v1/chat/completions (final usage info):\n{final_usage_data}"
+                )
                 yield f"data: {final_usage_data}\n\n"
 
             # report to FastAPI middleware aggregate usage across all choices
@@ -1095,6 +1105,9 @@ class OpenAIServingChat(OpenAIServing):
             choices=choices,
             usage=usage,
             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
+        )
+        logger.info(
+            f"[request_id={request_id}] Non-streaming response of /v1/chat/completions:\n{response.model_dump_json(ensure_ascii=False, indent=2, exclude_unset=True, exclude_none=True)}"
         )
 
         return response

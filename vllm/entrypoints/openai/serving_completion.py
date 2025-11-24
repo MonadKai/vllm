@@ -7,6 +7,7 @@ from collections.abc import Sequence as GenericSequence
 from typing import Optional, Union, cast
 
 import jinja2
+import json
 from fastapi import Request
 
 from vllm.config import ModelConfig
@@ -14,6 +15,7 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.logger import RequestLogger
 # yapf conflicts with isort for this block
 # yapf: disable
+from vllm.entrypoints.openai.log_request_response_utils import serialize_request_without_media
 from vllm.entrypoints.openai.protocol import (CompletionLogProbs,
                                               CompletionRequest,
                                               CompletionResponse,
@@ -75,6 +77,10 @@ class OpenAIServingCompletion(OpenAIServing):
             - suffix (the language models we currently support do not support
             suffix)
         """
+        request_id = f"cmpl-{self._base_request_id(raw_request)}"
+        logger.info(
+            f"[request_id={request_id}] Request body of {raw_request.url.path}:\n{json.dumps(serialize_request_without_media(request), ensure_ascii=False, indent=2)}"
+        )
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
@@ -90,7 +96,6 @@ class OpenAIServingCompletion(OpenAIServing):
             return self.create_error_response(
                 "suffix is not currently supported")
 
-        request_id = f"cmpl-{self._base_request_id(raw_request)}"
         created_time = int(time.time())
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
@@ -361,6 +366,10 @@ class OpenAIServingCompletion(OpenAIServing):
                         )
 
                     response_json = chunk.model_dump_json(exclude_unset=False)
+                    if i % 10 == 0:
+                        logger.info(
+                            f"[request_id={request_id}] Streaming response of /v1/completions ({prompt_idx}-th prompt, {output.index}-th output):\n{response_json}"
+                        )
                     yield f"data: {response_json}\n\n"
 
             total_prompt_tokens = sum(num_prompt_tokens)
@@ -380,6 +389,9 @@ class OpenAIServingCompletion(OpenAIServing):
                 )
                 final_usage_data = (final_usage_chunk.model_dump_json(
                     exclude_unset=False, exclude_none=True))
+                logger.info(
+                    f"[request_id={request_id}] Streaming response of /v1/completions (final usage info):\n{final_usage_data}"
+                )
                 yield f"data: {final_usage_data}\n\n"
 
             # report to FastAPI middleware aggregate usage across all choices
@@ -401,6 +413,7 @@ class OpenAIServingCompletion(OpenAIServing):
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
     ) -> CompletionResponse:
+        path = "/v1/completions"
         choices: list[CompletionResponseChoice] = []
         num_prompt_tokens = 0
         num_generated_tokens = 0
@@ -476,13 +489,17 @@ class OpenAIServingCompletion(OpenAIServing):
 
         request_metadata.final_usage_info = usage
 
-        return CompletionResponse(
+        response = CompletionResponse(
             id=request_id,
             created=created_time,
             model=model_name,
             choices=choices,
             usage=usage,
         )
+        logger.info(
+            f"[request_id={request_id}] Non-streaming response of /v1/completions:\n{response.model_dump_json(ensure_ascii=False, indent=2, exclude_none=True, exclude_unset=True)}"
+        )
+        return response
 
     def _create_completion_logprobs(
         self,
