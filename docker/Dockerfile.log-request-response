@@ -1,0 +1,14 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.8.5.post1
+
+ARG VLLM_INSTALL_PATH=/usr/local/lib/python3.12/dist-packages/vllm
+
+# add audio support
+RUN pip install librosa==0.11.0
+
+# add vllm log request response patch
+COPY vllm/entrypoints/openai/log_request_response_utils.py ${VLLM_INSTALL_PATH}/entrypoints/openai/log_request_response_utils.py
+
+COPY vllm/entrypoints/openai/serving_chat.py ${VLLM_INSTALL_PATH}/entrypoints/openai/serving_chat.py
+COPY vllm/entrypoints/openai/serving_completion.py ${VLLM_INSTALL_PATH}/entrypoints/openai/serving_completion.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
