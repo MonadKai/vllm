@@ -1107,7 +1107,7 @@ class OpenAIServingChat(OpenAIServing):
             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
         )
         logger.info(
-            f"[request_id={request_id}] Non-streaming response of /v1/chat/completions:\n{response.model_dump_json(ensure_ascii=False, indent=2, exclude_unset=True, exclude_none=True)}"
+            f"[request_id={request_id}] Non-streaming response of /v1/chat/completions:\n{response.model_dump_json(indent=2, exclude_unset=True, exclude_none=True)}"
         )
 
         return response
