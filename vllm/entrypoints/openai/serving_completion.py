@@ -497,7 +497,7 @@ class OpenAIServingCompletion(OpenAIServing):
             usage=usage,
         )
         logger.info(
-            f"[request_id={request_id}] Non-streaming response of /v1/completions:\n{response.model_dump_json(ensure_ascii=False, indent=2, exclude_none=True, exclude_unset=True)}"
+            f"[request_id={request_id}] Non-streaming response of /v1/completions:\n{response.model_dump_json(indent=2, exclude_none=True, exclude_unset=True)}"
         )
         return response
 
