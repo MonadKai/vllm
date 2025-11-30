@@ -14,7 +14,6 @@ from transformers import BatchFeature, PretrainedConfig, TensorType
 
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
-from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (MultiModalDataDict, MultiModalFieldConfig,
@@ -31,6 +30,8 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer
 from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP
 from .utils import (flatten_bn, init_vllm_registered_model, maybe_prefix,
                     merge_multimodal_embeddings)
+from .utils import AutoWeightsLoader, WeightsMapper
+
 
 AUDIO_PATCH_TOKEN_ID = 151690
 
@@ -447,14 +448,22 @@ class ResidualAttentionBlock(nn.Module):
 
 class AudioEncoder(nn.Module):
 
-    def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int,
-                 n_layer: int):
+    def __init__(
+        self, 
+        n_mels: int = 128,
+        n_ctx: int = 1500,
+        n_state: int = 1280, 
+        n_head: int = 20,
+        n_layer: int = 32,
+        kernel_size: int = 3,
+        stride: int = 2,
+    ):
         super().__init__()
-        self.conv1 = nn.Conv1d(n_mels, n_state, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv1d(n_mels, n_state, kernel_size=kernel_size, padding=1)
         self.conv2 = nn.Conv1d(n_state,
                                n_state,
-                               kernel_size=3,
-                               stride=2,
+                               kernel_size=kernel_size,
+                               stride=stride,
                                padding=1)
         self.positional_embedding = nn.Embedding(n_ctx, n_state)
 
@@ -495,20 +504,18 @@ class AudioEncoder(nn.Module):
 
 class Adaptor(nn.Module):
 
-    def __init__(self,
-                 n_state: int = 1280,
-                 n_hidden: int = 3072,
-                 kernel_size: int = 7,
-                 stride: int = 4,
-                 adapter_state: int = 2048):
+    def __init__(
+        self,
+        n_state: int = 1280,
+        n_hidden: int = 3584,
+        kernel_size: int = 3,
+        stride: int = 2,
+        adapter_state: int = 2048,
+    ):
         super().__init__()
         self.stride = stride
-        if self.stride != -1:
-            self.conv = nn.Conv1d(n_state,
-                                  n_state,
-                                  kernel_size,
-                                  stride,
-                                  padding=1)
+        assert self.stride != -1, "stride must be -1 for no convolution"
+        self.conv = nn.Conv1d(n_state, n_state, kernel_size, stride, padding=1)
         self.linear1 = nn.Linear(n_state, adapter_state)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(adapter_state, n_hidden)
@@ -517,11 +524,9 @@ class Adaptor(nn.Module):
         """
         x : torch.Tensor, shape = (batch_size, T, n_features)
         """
-
-        if self.stride != -1:
-            x = x.permute(0, 2, 1)  # (B, n_state, T)
-            x = F.gelu(self.conv(x))
-            x = x.permute(0, 2, 1)  # (B, T//stride, n_state)
+        x = x.permute(0, 2, 1)  # (B, n_state, T)
+        x = F.gelu(self.conv(x))
+        x = x.permute(0, 2, 1)  # (B, T//stride, n_state)
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
@@ -556,6 +561,22 @@ class StepASREncoder(nn.Module):
     info=Step1fAudioProcessingInfo,
     dummy_inputs=Step1fAudioDummyInputsBuilder)
 class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
+    hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={
+            "model.": "language_model.model.",
+            "lm_head.": "language_model.lm_head.",
+        })
+    packed_modules_mapping = {
+        "qkv_proj": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+        ],
+        "gate_up_proj": [
+            "gate_proj",
+            "up_proj",
+        ],
+    }
 
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
@@ -569,24 +590,32 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
 
         config = vllm_config.model_config.hf_config
         multimodal_config = vllm_config.model_config.multimodal_config
+        quant_config = vllm_config.quant_config
 
         self.config = config
         self.multimodal_config = multimodal_config
 
-        self.encoder = AudioEncoder(config.audio_encoder_config.n_mels,
-                                    config.audio_encoder_config.n_audio_ctx,
-                                    config.audio_encoder_config.n_audio_state,
-                                    config.audio_encoder_config.n_audio_head,
-                                    config.audio_encoder_config.n_audio_layer)
-        self.adapter = Adaptor(config.audio_encoder_config.n_audio_state,
-                               config.audio_encoder_config.llm_dim,
-                               config.audio_encoder_config.kernel_size,
-                               config.audio_encoder_config.adapter_stride)
+        if multimodal_config.get_limit_per_prompt("audio"):
+            self.encoder = AudioEncoder(config.audio_encoder_config.n_mels,
+                                        config.audio_encoder_config.n_audio_ctx,
+                                        config.audio_encoder_config.n_audio_state,
+                                        config.audio_encoder_config.n_audio_head,
+                                        config.audio_encoder_config.n_audio_layer)
+            self.adapter = Adaptor(config.audio_encoder_config.n_audio_state,
+                                config.audio_encoder_config.llm_dim,
+                                config.audio_encoder_config.kernel_size,
+                                config.audio_encoder_config.adapter_stride)
+        else:
+            self.encoder = None
+            self.adapter = None
 
+        self.quant_config = quant_config
         self.language_model = init_vllm_registered_model(
             vllm_config=vllm_config,
             hf_config=config.text_config,
-            prefix=maybe_prefix(prefix, "language_model"))
+            prefix=maybe_prefix(prefix, "language_model"),
+            architectures=["Qwen2ForCausalLM"],
+        )
 
         self.make_empty_intermediate_tensors = (
             self.language_model.make_empty_intermediate_tensors)
@@ -715,52 +744,16 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
     ) -> Optional[SamplerOutput]:
         return self.language_model.sample(logits, sampling_metadata)
 
-    def maybe_remap_params(self, name):
-        if name.startswith("model."):
-            name = name.replace("model.", "language_model.model.")
-        if name.startswith("lm_head"):
-            name = name.replace("lm_head", "language_model.lm_head")
-        return name
+    def load_weights(self, weights: Iterable[tuple[str,
+                                                   torch.Tensor]]) -> set[str]:
+        skip_prefixes = []
+        if self.encoder is None and self.adapter is None:
+            skip_prefixes.extend(["encoder.", "adapter."])
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
-        stacked_params_mapping = [
-            # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
-            (".gate_up_proj", ".gate_proj", 0),
-            (".gate_up_proj", ".up_proj", 1),
-        ]
-
-        params_dict = dict(self.named_parameters())
-        loaded_params = set()
-        for name, loaded_weight in weights:
-
-            name = self.maybe_remap_params(name)
-
-            for (param_name, weight_name, shard_id) in stacked_params_mapping:
-                if weight_name not in name:
-                    continue
-                name = name.replace(weight_name, param_name)
-                param = params_dict[name]
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
-                loaded_params.add(name)
-                break
-            else:
-                param = params_dict[name]
-                weight_loader = getattr(param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(param, loaded_weight)
-                loaded_params.add(name)
-
-        params_need_to_load = []
-        for name in params_dict:
-            params_need_to_load.append(name)
-        params_need_to_load = set(params_need_to_load)
-
-        if params_need_to_load != loaded_params:
-            param_name_example = list(params_need_to_load - loaded_params)[0]
-            raise RuntimeError(
-                f"Some parameters like {param_name_example} are not in the checkpoint and will falsely use random initialization"  # noqa: E501
-            )
+        loader = AutoWeightsLoader(
+            self,
+            skip_prefixes=skip_prefixes,
+        )
+        loaded_weights = loader.load_weights(weights,
+                                             mapper=self.hf_to_vllm_mapper)
+        return loaded_weights
