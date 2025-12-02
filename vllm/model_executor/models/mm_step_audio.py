@@ -89,6 +89,14 @@ class Step1fProcessor:
         return log_spec.t()
 
     def preprocess_audio(self, audio_tensor: np.ndarray) -> torch.Tensor:
+        # Limit audio max length to avoid exceeding positional embedding capacity
+        # Positional embedding max length is 1500, backtrack to audio samples:
+        # 1500 = (mel_frames + 2*1 - 3) / 2 + 1  (adapter conv)
+        # So mel_frames max ≈ 3000
+        # 3000 frames * 160 hop_length = 480000 samples
+        max_audio_samples = 480000 - 479  # subtract padding
+        if len(audio_tensor) > max_audio_samples:
+            audio_tensor = audio_tensor[:max_audio_samples]
         return self._log_mel_spectrogram(audio_tensor, padding=479)
 
     def get_num_audio_tokens(self, max_feature_len: int) -> int:
