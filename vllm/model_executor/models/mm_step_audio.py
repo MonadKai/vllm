@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from functools import cached_property
 from typing import Optional, TypedDict, Union
 
+import os
 import librosa
 import numpy as np
 import torch
@@ -613,6 +614,10 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
                                 config.audio_encoder_config.llm_dim,
                                 config.audio_encoder_config.kernel_size,
                                 config.audio_encoder_config.adapter_stride)
+            if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
+                self.encoder.forward = torch.compile(self.encoder.forward, mode="default", fullgraph=True)
+            if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
+                self.adapter.forward = torch.compile(self.adapter.forward, mode="default", fullgraph=True)
         else:
             self.encoder = None
             self.adapter = None

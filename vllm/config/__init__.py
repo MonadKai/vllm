@@ -2477,6 +2477,14 @@ class MultiModalConfig:
     embedding cache.
     """
 
+    mm_encoder_warmup_batch_sizes: Optional[list[int]] = None
+    """
+    The batch sizes to warm up the multimodal encoder.
+
+    When enabled, warm up the multimodal encoder with the given batch sizes
+    during engine initialization.
+    """
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,

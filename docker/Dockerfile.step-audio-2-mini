@@ -27,4 +27,8 @@ COPY vllm/transformers_utils/tokenizers/step_audio_2_tokenizer.py /usr/local/lib
 COPY vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
 COPY vllm/model_executor/models/mm_step_audio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/mm_step_audio.py
 
+# add mm encoder warmup support
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
+COPY vllm/config/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/config/__init__.py
+
 ENTRYPOINT ["vllm", "serve"]
