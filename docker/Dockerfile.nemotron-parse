@@ -1,0 +1,12 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
+
+# add radio model support
+COPY vllm/vllm/model_executor/models/radio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/radio.py
+
+# add nemotron-parse model support
+COPY vllm/vllm/model_executor/models/nemotron_parse.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/nemotron_parse.py
+COPY vllm/vllm/model_executor/models/nemotron_parse_tc.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/nemotron_parse_tc.py
+
+COPY vllm/vllm/model_executor/models/registry.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
