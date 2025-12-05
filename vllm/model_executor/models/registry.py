@@ -267,6 +267,8 @@ _MULTIMODAL_MODELS = {
     "VoxtralForConditionalGeneration": ("voxtral", "VoxtralForConditionalGeneration"),  # noqa: E501
     # [Encoder-decoder]
     "DonutForConditionalGeneration": ("donut", "DonutForConditionalGeneration"),
+    "NemotronParseForConditionalGeneration": ("nemotron_parse", "NemotronParseForConditionalGeneration"),
+    "NemotronParseTCForConditionalGeneration": ("nemotron_parse_tc", "NemotronParseTCForConditionalGeneration"),
     "Florence2ForConditionalGeneration": ("florence2", "Florence2ForConditionalGeneration"),  # noqa: E501
     "MllamaForConditionalGeneration": ("mllama", "MllamaForConditionalGeneration"),  # noqa: E501
     "Llama4ForConditionalGeneration": ("mllama4", "Llama4ForConditionalGeneration"),  # noqa: E501
