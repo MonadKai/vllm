@@ -1,5 +1,9 @@
 FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
 
+# timms already installed in the base image
+# add albumentations dependency
+RUN pip install albumentations -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 # add radio model support
 COPY vllm/model_executor/models/radio.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/radio.py
 
