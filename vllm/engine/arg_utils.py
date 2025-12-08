@@ -377,6 +377,7 @@ class EngineArgs:
     mm_encoder_tp_mode: MMEncoderTPMode = MultiModalConfig.mm_encoder_tp_mode
     io_processor_plugin: Optional[str] = None
     skip_mm_profiling: bool = MultiModalConfig.skip_mm_profiling
+    mm_encoder_warmup_batch_sizes: Optional[list[int]] = MultiModalConfig.mm_encoder_warmup_batch_sizes
     # LoRA fields
     enable_lora: bool = False
     enable_lora_bias: bool = LoRAConfig.bias_enabled
@@ -792,6 +793,9 @@ class EngineArgs:
             **multimodal_kwargs["interleave_mm_strings"])
         multimodal_group.add_argument("--skip-mm-profiling",
                                       **multimodal_kwargs["skip_mm_profiling"])
+        multimodal_group.add_argument(
+            "--mm-encoder-warmup-batch-sizes",
+            **multimodal_kwargs["mm_encoder_warmup_batch_sizes"])
 
         # LoRA related configs
         lora_kwargs = get_kwargs(LoRAConfig)
@@ -1002,6 +1006,7 @@ class EngineArgs:
             mm_processor_kwargs=self.mm_processor_kwargs,
             mm_processor_cache_gb=self.mm_processor_cache_gb,
             mm_encoder_tp_mode=self.mm_encoder_tp_mode,
+            mm_encoder_warmup_batch_sizes=self.mm_encoder_warmup_batch_sizes,
             override_pooler_config=self.override_pooler_config,
             logits_processor_pattern=self.logits_processor_pattern,
             generation_config=self.generation_config,
