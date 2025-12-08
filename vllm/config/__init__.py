@@ -463,6 +463,21 @@ class ModelConfig:
         DP (which is controlled by `--data-parallel-size`).
         This is only supported on a per-model basis and falls back to
         `"weights"` if the encoder does not support DP."""
+
+    mm_encoder_warmup_batch_sizes: Optional[list[int]] = None
+    """
+    The batch sizes to warm up the multimodal encoder.
+
+    When enabled, warm up the multimodal encoder with the given batch sizes
+    during engine initialization.
+
+    When not specified, the batch sizes will be dynamically determined based on
+    the maximum number of input items per prompt for each modality.
+
+    When specified, the batch sizes will be used to warm up the multimodal encoder
+    during engine initialization.
+    """
+
     pooler_config: Optional["PoolerConfig"] = field(init=False)
     """Pooler config which controls the behaviour of output pooling in pooling
     models."""
@@ -884,6 +899,7 @@ class ModelConfig:
                 mm_encoder_tp_mode=self.mm_encoder_tp_mode,
                 interleave_mm_strings=self.interleave_mm_strings,
                 skip_mm_profiling=self.skip_mm_profiling,
+                mm_encoder_warmup_batch_sizes=self.mm_encoder_warmup_batch_sizes,
             )
 
         return None
