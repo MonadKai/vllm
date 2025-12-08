@@ -4,11 +4,13 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
 # pip install librosa==0.11.0 -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 RUN pip install librosa==0.11.0
 
-# add step-audio2-mini support
-COPY vllm/audio_parsers/ /usr/local/lib/python3.12/dist-packages/vllm/audio_parsers/
-
+# add mm encoder warmup support
+COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
 COPY vllm/config/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/config/__init__.py
 COPY vllm/engine/arg_utils.py /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py
+
+# add step-audio2-mini support
+COPY vllm/audio_parsers/ /usr/local/lib/python3.12/dist-packages/vllm/audio_parsers/
 
 COPY vllm/entrypoints/chat_utils.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/chat_utils.py
 COPY vllm/entrypoints/openai/api_server.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py
