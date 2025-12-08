@@ -6,6 +6,6 @@ RUN pip install librosa==0.11.0
 # add mm encoder warmup support
 COPY vllm/v1/worker/gpu_model_runner.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py
 COPY vllm/config/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/config/__init__.py
-
+COPY vllm/engine/arg_utils.py /usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py
 
 ENTRYPOINT ["vllm", "serve"]
