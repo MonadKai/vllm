@@ -385,17 +385,6 @@ def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     return ~mask
 
 
-def mask_to_bias(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    # assert mask.dtype == torch.bool
-    # assert dtype in [torch.float32, torch.bfloat16, torch.float16]
-    mask = mask.to(dtype)
-    # attention mask bias
-    # NOTE(Mddct): torch.finfo jit issues
-    #     chunk_masks = (1.0 - chunk_masks) * torch.finfo(dtype).min
-    mask = (1.0 - mask) * -1.0e+10
-    return mask
-
-
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, n_state: int, n_head: int):
@@ -508,32 +497,26 @@ class AudioEncoder(nn.Module):
         x = F.gelu(self.conv2(x))
         x = x.permute(0, 2, 1)  # (B, T // 2, n_state)
 
-        # 直接使用实际长度，而不是计算
-        T_after_conv = x.size(1)  # 更安全
+        T_after_conv = x.size(1)
         x_len_after_conv = (x_len + 1) // 2
 
-        # 验证长度合法性
-        # assert (x_len_after_conv <= T_after_conv).all(), \
-        #     f"x_len_after_conv {x_len_after_conv.max()} exceeds T_after_conv {T_after_conv}"
-
-        # 生成mask并一次性完成所有unsqueeze
-        mask = make_non_pad_mask(x_len_after_conv, T_after_conv)  # (B, T//2)
-        # mask = mask_to_bias(mask, x.dtype)  # (B, T//2)
-        # 一次性扩展到attention需要的形状: (B, 1, 1, T//2)
+        # More efficient mask generation - using broadcasting
+        seq_range = torch.arange(T_after_conv, device=x.device, dtype=x_len.dtype)
+        # (1, T) < (B, 1) -> (B, T)
+        mask = seq_range.unsqueeze(0) < x_len_after_conv.unsqueeze(1)
+        # Expand to attention required shape: (B, 1, 1, T)
         mask = mask.unsqueeze(1).unsqueeze(1)
 
-        # 如果positional_embedding已经是正确dtype，直接相加
-        x = x + self.positional_embedding.weight[:x.shape[1], :]
-        # 只在真正需要时才调用contiguous()
+        pos_emb = self.positional_embedding.weight[:T_after_conv]
+        x = x + pos_emb  # broadcasted addition
 
         for block in self.blocks:
-            x = block(x, mask)  # mask已经是正确的形状，不需要再unsqueeze
+            x = block(x, mask)
 
         x = x.permute(0, 2, 1)
         x = self.avg_pooler(x)
         x = x.permute(0, 2, 1)
 
-        # 计算最终长度
         x_len_final = (x_len_after_conv + 1) // 2
 
         x = self.after_norm(x)
@@ -562,9 +545,9 @@ class Adaptor(nn.Module):
         """
         x : torch.Tensor, shape = (batch_size, T, n_features)
         """
-        x = x.permute(0, 2, 1)  # (B, n_state, T)
+        x = x.transpose(1, 2).contiguous()  # (B, n_state, T)
         x = F.gelu(self.conv(x))
-        x = x.permute(0, 2, 1)  # (B, T//stride, n_state)
+        x = x.transpose(1, 2).contiguous()  # (B, T//stride, n_state)
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
