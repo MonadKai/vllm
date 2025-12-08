@@ -77,16 +77,22 @@ class Step1fProcessor:
         audio: np.ndarray,
         padding: int = 0,
     ):
-        audio = F.pad(torch.from_numpy(audio.astype(np.float32)), (0, padding))
-        window = torch.hann_window(400).to(audio.device)
-        stft = torch.stft(audio, 400, 160, window=window, return_complex=True)
-        magnitudes = stft[..., :-1].abs()**2
-        filters = self._mel_filters
+        audio_tensor = torch.from_numpy(audio.astype(np.float32))
+        if padding > 0:
+            audio_tensor = F.pad(audio_tensor, (0, padding))
+        
+        device = audio_tensor.device
+        window = torch.hann_window(400, device=device)
+
+        stft = torch.stft(audio_tensor, 400, 160, window=window, return_complex=True)
+        magnitudes = stft[..., :-1].abs().pow(2)
+
+        filters = self._mel_filters.to(device)
         mel_spec = filters @ magnitudes
 
         log_spec = torch.clamp(mel_spec, min=1e-10).log10()
         log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
-        log_spec = (log_spec + 4.0) / 4.0
+        log_spec = (log_spec + 4.0) * 0.25
         return log_spec.t()
 
     def preprocess_audio(self, audio_tensor: np.ndarray) -> torch.Tensor:
@@ -379,57 +385,54 @@ def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     return ~mask
 
 
-def mask_to_bias(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    assert mask.dtype == torch.bool
-    assert dtype in [torch.float32, torch.bfloat16, torch.float16]
-    mask = mask.to(dtype)
-    # attention mask bias
-    # NOTE(Mddct): torch.finfo jit issues
-    #     chunk_masks = (1.0 - chunk_masks) * torch.finfo(dtype).min
-    mask = (1.0 - mask) * -1.0e+10
-    return mask
-
-
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, n_state: int, n_head: int):
         super().__init__()
         self.n_head = n_head
+        self.head_dim = n_state // n_head
+
         self.query = nn.Linear(n_state, n_state)
         self.key = nn.Linear(n_state, n_state, bias=False)
         self.value = nn.Linear(n_state, n_state)
         self.out = nn.Linear(n_state, n_state)
+
+        self.scale = self.head_dim ** -0.5
 
     def forward(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ):
+        B, T, D = x.shape
         q = self.query(x)
         k = self.key(x)
         v = self.value(x)
 
-        wv, qk = self.qkv_attention(q, k, v, mask)
-        return self.out(wv), qk
+        q = q.view(B, T, self.n_head, self.head_dim)
+        k = k.view(B, T, self.n_head, self.head_dim)
+        v = v.view(B, T, self.n_head, self.head_dim)
 
-    def qkv_attention(self,
-                      q: torch.Tensor,
-                      k: torch.Tensor,
-                      v: torch.Tensor,
-                      mask: Optional[torch.Tensor] = None):
-        _, T, D = q.shape
-        scale = (D // self.n_head)**-0.25
-        q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3) * scale
-        k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 3, 1) * scale
-        v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
-
-        qk = q @ k  # (B, n_head, T, T)
-        if mask is not None:
-            qk = qk + mask
-        qk = qk.float()
-
-        w = F.softmax(qk, dim=-1).to(q.dtype)
-        return (w @ v).permute(0, 2, 1, 3).flatten(start_dim=2), qk.detach()
+        # Fallback to PyTorch's scaled_dot_product_attention
+        q = q.transpose(1, 2)  # (B, n_head, T, head_dim)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        attn_mask = mask
+        
+        attn_output = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            scale=self.scale,
+            is_causal=False
+        )
+        attn_output = attn_output.transpose(1, 2)  # (B, T, n_head, head_dim)
+        
+        # Reshape back
+        attn_output = attn_output.contiguous().view(B, T, D)
+        output = self.out(attn_output)
+        return output
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -450,7 +453,7 @@ class ResidualAttentionBlock(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ):
-        x = x + self.attn(self.attn_ln(x), mask=mask)[0]
+        x = x + self.attn(self.attn_ln(x), mask=mask)
         x = x + self.mlp(self.mlp_ln(x))
         return x
 
@@ -489,26 +492,35 @@ class AudioEncoder(nn.Module):
         x_len: torch.Tensor, shape = (batch_size,)
             length of each audio in x
         """
-        T = x.size(-1)
+        # T = x.size(-1)
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x))
         x = x.permute(0, 2, 1)  # (B, T // 2, n_state)
-        mask = make_non_pad_mask(x_len, T).unsqueeze(1)  # (B, 1, T)
-        mask = mask_to_bias(mask[:, :, (T + 1) % 2::2],
-                            x.dtype)  # (B, 1, T // 2)
 
-        x = (x + self.positional_embedding.weight[:x.shape[1], :]).to(
-            x.dtype).contiguous()
+        T_after_conv = x.size(1)
+        x_len_after_conv = (x_len + 1) // 2
+
+        # More efficient mask generation - using broadcasting
+        seq_range = torch.arange(T_after_conv, device=x.device, dtype=x_len.dtype)
+        # (1, T) < (B, 1) -> (B, T)
+        mask = seq_range.unsqueeze(0) < x_len_after_conv.unsqueeze(1)
+        # Expand to attention required shape: (B, 1, 1, T)
+        mask = mask.unsqueeze(1).unsqueeze(1)
+
+        pos_emb = self.positional_embedding.weight[:T_after_conv]
+        x = x + pos_emb  # broadcasted addition
 
         for block in self.blocks:
-            x = block(x, mask.unsqueeze(1))
+            x = block(x, mask)
 
         x = x.permute(0, 2, 1)
         x = self.avg_pooler(x)
         x = x.permute(0, 2, 1)
-        x_len = (x_len + 1) // 2 // 2
+
+        x_len_final = (x_len_after_conv + 1) // 2
+
         x = self.after_norm(x)
-        return x, x_len
+        return x, x_len_final
 
 
 class Adaptor(nn.Module):
@@ -533,9 +545,9 @@ class Adaptor(nn.Module):
         """
         x : torch.Tensor, shape = (batch_size, T, n_features)
         """
-        x = x.permute(0, 2, 1)  # (B, n_state, T)
+        x = x.transpose(1, 2).contiguous()  # (B, n_state, T)
         x = F.gelu(self.conv(x))
-        x = x.permute(0, 2, 1)  # (B, T//stride, n_state)
+        x = x.transpose(1, 2).contiguous()  # (B, T//stride, n_state)
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
@@ -681,8 +693,8 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
         audio_lens = torch.tensor(audio_input["audio_lens"],
                                   device=self.device)
 
-        audio_mels = audio_mels.permute(0, 2,
-                                        1)  # (B, T, n_mels) -> (B, n_mels, T)
+        # (B, T, n_mels) -> (B, n_mels, T)
+        audio_mels = audio_mels.permute(0, 2, 1).contiguous()
 
         audio_features, audio_lens = self.encoder(audio_mels, audio_lens)
         audio_features = self.adapter(audio_features)
@@ -690,9 +702,10 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
             audio_lens - 1
         ) // 2 + 1  # FIXME(ys): hard code for audio token num, padding 1, kernel size 3, stride 2 # noqa: E501
 
+        B = audio_features.size(0)
         audio_feature_list = [
             audio_features[i, :audio_feature_lens[i]]
-            for i in range(audio_features.size(0))
+            for i in range(B)
         ]
 
         return audio_feature_list
