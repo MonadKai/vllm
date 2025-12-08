@@ -7,6 +7,7 @@ from typing import Optional, TypedDict, Union
 
 import os
 import librosa
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -397,7 +398,7 @@ class MultiHeadAttention(nn.Module):
         self.value = nn.Linear(n_state, n_state)
         self.out = nn.Linear(n_state, n_state)
 
-        self.scale = self.head_dim ** -0.5
+        self.scale = 1.0 / math.sqrt(self.head_dim)
 
     def forward(
         self,
@@ -629,7 +630,7 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
             if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
                 self.encoder.forward = torch.compile(self.encoder.forward, mode="default", fullgraph=True)
             if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
-                self.adapter.forward = torch.compile(self.adapter.forward, mode="default", fullgraph=True)
+                self.adapter.forward = torch.compile(self.adapter.forward, mode="default")
         else:
             self.encoder = None
             self.adapter = None
