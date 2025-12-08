@@ -630,7 +630,7 @@ class StepAudio2ForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
             if os.environ.get("VLLM_COMPILE_AUDIO_TOWER", "0") == "1":
                 self.encoder.forward = torch.compile(self.encoder.forward, mode="default", fullgraph=True)
             if os.environ.get("VLLM_COMPILE_MULTI_MODAL_PROJECTOR", "0") == "1":
-                self.adapter.forward = torch.compile(self.adapter.forward, mode="default")
+                self.adapter.forward = torch.compile(self.adapter.forward, mode="default", fullgraph=True)
         else:
             self.encoder = None
             self.adapter = None
