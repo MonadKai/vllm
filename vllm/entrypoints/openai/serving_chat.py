@@ -26,6 +26,7 @@ from vllm.entrypoints.harmony_utils import (
     get_streamable_parser_for_assistant, get_system_message, parse_chat_input,
     parse_chat_output, render_for_completion)
 from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.openai.log_request_response_utils import serialize_request_without_media
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionLogProb, ChatCompletionLogProbs,
     ChatCompletionLogProbsContent, ChatCompletionNamedToolChoiceParam,
@@ -265,6 +266,10 @@ class OpenAIServingChat(OpenAIServing):
 
         request_id = "chatcmpl-" \
                      f"{self._base_request_id(raw_request, request.request_id)}"
+
+        logger.info(
+            f"[request_id={request_id}] Request body of /v1/chat/completions:\n{json.dumps(serialize_request_without_media(request), ensure_ascii=False, indent=2)}"
+        )
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
