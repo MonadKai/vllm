@@ -8,6 +8,7 @@ from collections.abc import Sequence as GenericSequence
 from typing import Optional, Union, cast
 
 import jinja2
+import json
 from fastapi import Request
 from typing_extensions import assert_never
 
@@ -16,6 +17,7 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.logger import RequestLogger
 # yapf conflicts with isort for this block
 # yapf: disable
+from vllm.entrypoints.openai.log_request_response_utils import serialize_request_without_media
 from vllm.entrypoints.openai.protocol import (CompletionLogProbs,
                                               CompletionRequest,
                                               CompletionResponse,
@@ -120,6 +122,9 @@ class OpenAIServingCompletion(OpenAIServing):
         request_id = (
             f"cmpl-"
             f"{self._base_request_id(raw_request, request.request_id)}")
+        logger.info(
+            f"[request_id={request_id}] Request body of /v1/completions:\n{json.dumps(serialize_request_without_media(request), ensure_ascii=False, indent=2)}"
+        )
         created_time = int(time.time())
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
