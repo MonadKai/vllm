@@ -1145,7 +1145,7 @@ async def tei_router_embed(request: TeiEmbedRequest, raw_request: Request):
     generator = await handler.embed(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
-        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+        return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
     return JSONResponse(content=generator)
 
 
@@ -1168,7 +1168,7 @@ async def tei_router_rerank(request: TeiRerankRequest, raw_request: Request):
 
     generator = await handler.rerank(request, raw_request)
     if isinstance(generator, ErrorResponse):
-        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+        return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
     return JSONResponse(content=generator)
 
 
