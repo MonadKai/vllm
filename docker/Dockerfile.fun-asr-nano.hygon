@@ -1,9 +1,11 @@
 # HINT: torchaudio is not available in the 20251216 image
-FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.2-tx-1210-das1.7-py3.10-20251216
+# FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.2-tx-1210-das1.7-py3.10-20251216
+FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk25.04.1-rc5-rocblas101839-0811-das1.6-py3.10-20250812-beta
 
 # add transformers funasr nano support
 COPY dist/transformers-4.57.3.tar.gz /tmp/transformers-4.57.3.tar.gz
 RUN pip uninstall transformers -y && pip install /tmp/transformers-4.57.3.tar.gz --no-deps && rm -rf /tmp/transformers-4.57.3.tar.gz
+RUN pip install tokenizers==0.22.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # `torchaudio` already installed in base image
 RUN pip install librosa==0.11.0
