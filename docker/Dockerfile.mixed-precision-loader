@@ -1,0 +1,9 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.9.2
+
+# add vllm mixed precision model loader
+COPY vllm/model_executor/model_loader/mixed_precision_loader.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/mixed_precision_loader.py
+COPY vllm/model_executor/model_loader/__init__.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/__init__.py
+COPY vllm/config.py /usr/local/lib/python3.12/dist-packages/vllm/config.py
+COPY vllm/inputs/registry.py /usr/local/lib/python3.12/dist-packages/vllm/inputs/registry.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
