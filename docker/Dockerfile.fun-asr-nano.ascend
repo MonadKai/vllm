@@ -1,0 +1,32 @@
+FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.11.0
+
+# add vllm tei plugin support
+# COPY dist/vllm_tei_plugin-0.10.1.1.tar.gz /tmp/vllm_tei_plugin-0.10.1.1.tar.gz
+# RUN pip install /tmp/vllm_tei_plugin-0.10.1.1.tar.gz --no-deps && rm -rf /tmp/vllm_tei_plugin-0.10.1.1.tar.gz
+
+# add vllm kubernetes plugin support
+# COPY dist/vllm_kubernetes_plugin-0.1.0.tar.gz /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+# RUN pip install /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz --no-deps && rm -rf /tmp/vllm_kubernetes_plugin-0.1.0.tar.gz
+
+# add torchaudio support, base image already has librosa
+RUN pip install torchaudio==2.7.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+# RUN pip install librosa==0.11.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# add transformers fun-asr-nano support
+COPY dist/transformers-4.57.3.tar.gz /tmp/transformers-4.57.3.tar.gz
+RUN pip uninstall transformers -y && pip install /tmp/transformers-4.57.3.tar.gz --no-deps && rm -rf /tmp/transformers-4.57.3.tar.gz
+
+ARG VLLM_INSTALL_PATH=/vllm-workspace/vllm/vllm
+
+# add vllm mixed precision model loader
+COPY vllm/model_executor/model_loader/mixed_precision_loader.py ${VLLM_INSTALL_PATH}/model_executor/model_loader/mixed_precision_loader.py
+COPY vllm/model_executor/model_loader/__init__.py ${VLLM_INSTALL_PATH}/model_executor/model_loader/__init__.py
+
+# add vllm multimodal processing patch
+COPY vllm/multimodal/processing.py ${VLLM_INSTALL_PATH}/multimodal/processing.py
+
+# add vllm fun-asr-nano support
+COPY vllm/model_executor/models/funasr_nano.py ${VLLM_INSTALL_PATH}/model_executor/models/funasr_nano.py
+COPY vllm/model_executor/models/registry.py ${VLLM_INSTALL_PATH}/model_executor/models/registry.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
