@@ -1,0 +1,17 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.11.0
+
+# add audio support
+# you can use the mirror of tsinghua university to install librosa, e.g. pip install librosa==0.11.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install librosa==0.11.0
+
+# add transformers funaudiochat support
+COPY dist/transformers-4.57.0.tar.gz /tmp/transformers-4.57.0.tar.gz
+RUN pip uninstall transformers -y && pip install /tmp/transformers-4.57.0.tar.gz --no-deps && rm -rf /tmp/transformers-4.57.0.tar.gz
+
+# add vllm funaudiochat support
+ARG VLLM_INSTALL_PATH=/usr/local/lib/python3.12/dist-packages/vllm
+
+COPY vllm/model_executor/models/funaudiochat.py ${VLLM_INSTALL_PATH}/model_executor/models/funaudiochat.py
+COPY vllm/model_executor/models/registry.py ${VLLM_INSTALL_PATH}/model_executor/models/registry.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
