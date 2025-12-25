@@ -1,0 +1,19 @@
+FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.11.0
+
+# add audio support
+# you can use the mirror of tsinghua university to install librosa, e.g. pip install librosa==0.11.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
+# base image already has librosa
+# RUN pip install librosa==0.11.0
+RUN pip install torchaudio==2.7.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# add transformers funaudiochat support
+COPY dist/transformers-4.57.0.tar.gz /tmp/transformers-4.57.0.tar.gz
+RUN pip uninstall transformers -y && pip install /tmp/transformers-4.57.0.tar.gz --no-deps && rm -rf /tmp/transformers-4.57.0.tar.gz
+
+# add vllm funaudiochat support
+ARG VLLM_INSTALL_PATH=/vllm-workspace/vllm/vllm
+
+COPY vllm/model_executor/models/funaudiochat.py ${VLLM_INSTALL_PATH}/model_executor/models/funaudiochat.py
+COPY vllm/model_executor/models/registry.py ${VLLM_INSTALL_PATH}/model_executor/models/registry.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
