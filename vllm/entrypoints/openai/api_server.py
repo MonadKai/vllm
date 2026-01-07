@@ -78,6 +78,8 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               TranslationResponse,
                                               UnloadLoRAAdapterRequest)
 # yapf: enable
+from vllm.entrypoints.tei.protocol import EmbedRequest as TeiEmbedRequest
+from vllm.entrypoints.tei.protocol import RerankRequest as TeiRerankRequest
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_classification import (
     ServingClassification)
@@ -86,6 +88,8 @@ from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.entrypoints.openai.serving_models import (BaseModelPath,
                                                     OpenAIServingModels)
+from vllm.entrypoints.tei.serving_tei_embed import TeiServingEmbed
+from vllm.entrypoints.tei.serving_tei_rerank import TeiServingRerank
 from vllm.entrypoints.openai.serving_pooling import OpenAIServingPooling
 from vllm.entrypoints.openai.serving_score import ServingScores
 from vllm.entrypoints.openai.serving_tokenization import (
@@ -324,7 +328,7 @@ async def validate_json_request(raw_request: Request):
 
 
 router = APIRouter()
-
+tei_router = APIRouter(prefix="/tei")
 
 class PrometheusResponse(Response):
     media_type = prometheus_client.CONTENT_TYPE_LATEST
@@ -411,6 +415,12 @@ def translation(request: Request) -> OpenAIServingTranslation:
 def engine_client(request: Request) -> EngineClient:
     return request.app.state.engine_client
 
+def tei_embed(request: Request) -> Optional[TeiServingEmbed]:
+    return request.app.state.tei_serving_embed
+
+
+def tei_rerank(request: Request) -> Optional[TeiServingRerank]:
+    return request.app.state.tei_serving_rerank
 
 @router.get("/health", response_class=Response)
 async def health(raw_request: Request) -> Response:
@@ -883,6 +893,50 @@ async def do_rerank_v1(request: RerankRequest, raw_request: Request):
 async def do_rerank_v2(request: RerankRequest, raw_request: Request):
     return await do_rerank(request, raw_request)
 
+@tei_router.post(
+    "/embed",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_embed(request: TeiEmbedRequest, raw_request: Request):
+    handler = tei_embed(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support TEI Embed API"
+        )
+
+    generator = await handler.embed(request, raw_request)
+
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)
+
+@tei_router.post(
+    "/rerank",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_rerank(request: TeiRerankRequest, raw_request: Request):
+    handler = tei_rerank(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support TEI Rerank API"
+        )
+
+    generator = await handler.rerank(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)
 
 TASK_HANDLERS: dict[str, dict[str, tuple]] = {
     "generate": {
@@ -1141,6 +1195,7 @@ def build_app(args: Namespace) -> FastAPI:
     else:
         app = FastAPI(lifespan=lifespan)
     app.include_router(router)
+    app.include_router(tei_router)
     app.root_path = args.root_path
 
     mount_metrics(app)
@@ -1359,6 +1414,21 @@ async def init_app_state(
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0
 
+    state.tei_serving_embed = TeiServingEmbed(
+        engine_client,
+        model_config,
+        state.openai_serving_models,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+    ) if model_config.task == "embed" else None
+
+    state.tei_serving_rerank = TeiServingRerank(
+        engine_client,
+        model_config,
+        state.openai_serving_models,
+        request_logger=request_logger,
+    ) if (model_config.task == "score" or enable_serving_reranking) else None
 
 def create_server_socket(addr: tuple[str, int]) -> socket.socket:
     family = socket.AF_INET
