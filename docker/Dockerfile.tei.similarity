@@ -1,0 +1,7 @@
+FROM registry.100credit.cn/xdynamic/x86_64/nvidia/vllm-openai:v0.8.5.post1-tei
+
+COPY ./vllm/entrypoints/openai/protocol.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/protocol.py
+COPY ./vllm/entrypoints/openai/api_server.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py
+COPY ./vllm/entrypoints/openai/serving_embedding.py /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/serving_embedding.py
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]

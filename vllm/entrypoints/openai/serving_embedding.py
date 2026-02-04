@@ -17,6 +17,8 @@ from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.protocol import (EmbeddingChatRequest,
                                               EmbeddingRequest,
                                               EmbeddingResponse,
+                                              SimilarityResponse,
+                                              EmbeddingCompletionRequest,
                                               EmbeddingResponseData,
                                               ErrorResponse, UsageInfo)
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
@@ -243,3 +245,47 @@ class OpenAIServingEmbedding(OpenAIServing):
             data=items,
             usage=usage,
         )
+
+    async def create_similarity(
+        self, request: EmbeddingRequest, raw_request: Request
+    ) -> Union[SimilarityResponse, ErrorResponse]:
+        request_openai = self._convert_to_openai_embedding_request(request)
+
+        response_openai = await self.create_embedding(
+            request_openai, raw_request
+        )
+        if isinstance(response_openai, ErrorResponse):
+            return response_openai
+        similarity_respone = self._convert_to_similarity_response(response_openai)
+        similarity_score = self._cosine_similarity_0_1(similarity_respone[0], similarity_respone[1])
+        return SimilarityResponse(data=[float(similarity_score)],
+                                  model=request_openai.model,
+                                  usage=response_openai.usage)
+
+    def _convert_to_similarity_response(
+        self,
+        response_openai: EmbeddingResponse,
+    ) -> list[list[float]]:
+        response_openai.data.sort(key=lambda x: x.index)
+        embeddings = [x.embedding for x in response_openai.data]
+        return embeddings
+
+    def _convert_to_openai_embedding_request(
+        self,
+        request: SimilarityResponse,
+    ) -> EmbeddingCompletionRequest:
+        return EmbeddingCompletionRequest(
+            model=self._get_model_name(None),
+            input=[request.text_1, request.text_2],
+            encoding_format=request.encoding_format,
+            dimensions=request.dimensions,
+            user=request.user,
+            truncate_prompt_tokens=request.truncate_prompt_tokens,
+        )
+
+    def _cosine_similarity_0_1(self,vec1, vec2):
+        v1 = np.array(vec1)
+        v2 = np.array(vec2)
+        cos = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        #  [-1, 1] --> [0, 1]
+        return (cos + 1) / 2
