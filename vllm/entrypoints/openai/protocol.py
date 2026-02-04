@@ -11,7 +11,7 @@ from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 import torch
 from fastapi import UploadFile
 from pydantic import (BaseModel, ConfigDict, Field, TypeAdapter,
-                      ValidationInfo, field_validator, model_validator)
+                      ValidationInfo, field_validator, model_validator, validator)
 from typing_extensions import TypeAlias
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
@@ -1363,6 +1363,53 @@ class ChatCompletionResponse(OpenAIBaseModel):
     usage: UsageInfo
     prompt_logprobs: Optional[list[Optional[dict[int, Logprob]]]] = None
 
+class SimilarityRequest(OpenAIBaseModel):
+    model: Optional[str] = None
+    text_1: Union[list[int], str]
+    text_2: Union[list[int], str]
+    encoding_format: Literal["float", "base64"] = "float"
+    dimensions: Optional[int] = None
+    user: Optional[str] = None
+    truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None
+
+    # doc: begin-embedding-pooling-params
+    additional_data: Optional[Any] = None
+    # doc: end-embedding-pooling-params
+
+    # doc: begin-embedding-extra-params
+    add_special_tokens: bool = Field(
+        default=True,
+        description=(
+            "If true (the default), special tokens (e.g. BOS) will be added to "
+            "the prompt."),
+    )
+    priority: int = Field(
+        default=0,
+        description=(
+            "The priority of the request (lower means earlier handling; "
+            "default: 0). Any priority other than 0 will raise an error "
+            "if the served model does not use priority scheduling."),
+    )
+
+    @validator('text_1', 'text_2')
+    def validate_single_text(cls, text: str):
+        if not text:
+            raise ValueError('text_1 and text_2 must be non-empty strings')
+        """确保每个文本字段是单个字符串，不是列表"""
+        if isinstance(text, list):
+            # 如果是单元素列表，可以自动转换为字符串
+            if len(text) == 1 and isinstance(text[0], str):
+                return text[0]
+            raise ValueError('text_1 and text_2 must be single strings, not lists')
+        return text
+
+class SimilarityResponse(OpenAIBaseModel):
+    id: str = Field(default_factory=lambda: f"sim-{random_uuid()}")
+    object: str = "score"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str
+    data: list[float]
+    usage: UsageInfo
 
 class DeltaMessage(OpenAIBaseModel):
     role: Optional[str] = None

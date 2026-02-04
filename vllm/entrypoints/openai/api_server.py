@@ -65,6 +65,7 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               ScoreRequest, ScoreResponse,
                                               TokenizeRequest,
                                               TokenizeResponse,
+                                              SimilarityRequest, SimilarityResponse,
                                               TranscriptionRequest,
                                               TranscriptionResponse,
                                               UnloadLoRAAdapterRequest)
@@ -446,6 +447,19 @@ async def tokenize(request: TokenizeRequest, raw_request: Request):
 
     assert_never(generator)
 
+@router.post("/v1/similarities", dependencies=[Depends(validate_json_request)])
+@with_cancellation
+async def create_similarities(request: SimilarityRequest, raw_request: Request):
+    handler = embedding(raw_request)
+
+    generator = await handler.create_similarity(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    elif isinstance(generator, SimilarityResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    assert_never(generator)
 
 @router.post("/detokenize", dependencies=[Depends(validate_json_request)])
 @with_cancellation
