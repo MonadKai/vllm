@@ -38,7 +38,7 @@ def tpu_platform_plugin() -> str | None:
     # Check for Pathways TPU proxy
     if envs.VLLM_TPU_USING_PATHWAYS:
         logger.debug("Confirmed TPU platform is available via Pathways proxy.")
-        return "tpu_inference.platforms.tpu_jax.TpuPlatform"
+        return "tpu_inference.platforms.tpu_platform.TpuPlatform"
 
     # Check for libtpu installation
     try:
@@ -60,7 +60,7 @@ def cuda_platform_plugin() -> str | None:
     is_cuda = False
     logger.debug("Checking if CUDA platform is available.")
     try:
-        from vllm.utils import import_pynvml
+        from vllm.utils.import_utils import import_pynvml
 
         pynvml = import_pynvml()
         pynvml.nvmlInit()
@@ -132,22 +132,17 @@ def xpu_platform_plugin() -> str | None:
     is_xpu = False
     logger.debug("Checking if XPU platform is available.")
     try:
-        # installed IPEX if the machine has XPUs.
-        import intel_extension_for_pytorch  # noqa: F401
         import torch
 
         if supports_xccl():
             dist_backend = "xccl"
-        else:
-            dist_backend = "ccl"
-            import oneccl_bindings_for_pytorch  # noqa: F401
-
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            is_xpu = True
             from vllm.platforms.xpu import XPUPlatform
 
             XPUPlatform.dist_backend = dist_backend
             logger.debug("Confirmed %s backend is available.", XPUPlatform.dist_backend)
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            is_xpu = True
             logger.debug("Confirmed XPU platform is available.")
     except Exception as e:
         logger.debug("XPU platform is not available because: %s", str(e))

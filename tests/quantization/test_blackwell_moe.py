@@ -10,9 +10,9 @@ import pytest
 from tests.utils import RemoteOpenAIServer
 from vllm.platforms import current_platform
 
-if not current_platform.is_device_capability(100):
+if not current_platform.is_device_capability_family(100):
     pytest.skip(
-        "This test only runs on Blackwell GPUs (SM100).", allow_module_level=True
+        "This test only runs on Blackwell GPUs (SM10x).", allow_module_level=True
     )
 
 
@@ -85,34 +85,34 @@ def can_initialize(
     )
 )
 def test_llama4_fp8_tensor_moe_flashinfer_cutlass(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP8", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "throughput")
     can_initialize(
-        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP8", hf_overrides=HF_OVERRIDE_MM
+        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP8",
+        hf_overrides=HF_OVERRIDE_MM,
+        extra_args=["--moe-backend=flashinfer_cutlass"],
     )
 
 
 def test_llama4_fp8_tensor_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP8", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "latency")
     can_initialize(
-        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP8", hf_overrides=HF_OVERRIDE_MM
+        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP8",
+        hf_overrides=HF_OVERRIDE_MM,
+        extra_args=["--moe-backend=flashinfer_trtllm"],
     )
 
 
 def test_llama4_nvfp4_moe_flashinfer_cutlass(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP4", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "throughput")
     can_initialize(
-        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP4", hf_overrides=HF_OVERRIDE_MM
+        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP4",
+        hf_overrides=HF_OVERRIDE_MM,
+        extra_args=["--moe-backend=flashinfer_cutlass"],
     )
 
 
 def test_llama4_nvfp4_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP4", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "latency")
     can_initialize(
-        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP4", hf_overrides=HF_OVERRIDE_MM
+        "nvidia/Llama-4-Scout-17B-16E-Instruct-FP4",
+        hf_overrides=HF_OVERRIDE_MM,
+        extra_args=["--moe-backend=flashinfer_trtllm"],
     )
 
 
@@ -120,8 +120,11 @@ def test_llama4_nvfp4_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_deepseek_fp8_block_moe_deep_gemm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_DEEP_GEMM", "1")
-    can_initialize("deepseek-ai/DeepSeek-V3.1", hf_overrides=HF_OVERRIDE_TEXT)
+    can_initialize(
+        "deepseek-ai/DeepSeek-V3.1",
+        hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=deep_gemm"],
+    )
 
 
 @pytest.mark.skip(
@@ -131,27 +134,35 @@ def test_deepseek_fp8_block_moe_deep_gemm(monkeypatch: pytest.MonkeyPatch):
     )
 )
 def test_deepseek_fp8_block_moe_flashinfer_cutlass(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP8", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "throughput")
-    can_initialize("deepseek-ai/DeepSeek-V3.1", hf_overrides=HF_OVERRIDE_TEXT)
+    can_initialize(
+        "deepseek-ai/DeepSeek-V3.1",
+        hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=flashinfer_cutlass"],
+    )
 
 
 def test_deepseek_fp8_block_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP8", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "latency")
-    can_initialize("deepseek-ai/DeepSeek-V3.1", hf_overrides=HF_OVERRIDE_TEXT)
+    can_initialize(
+        "deepseek-ai/DeepSeek-V3.1",
+        hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=flashinfer_trtllm"],
+    )
 
 
 def test_deepseek_nvfp4_moe_flashinfer_cutlass(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP4", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "throughput")
-    can_initialize("nvidia/DeepSeek-R1-0528-FP4-v2", hf_overrides=HF_OVERRIDE_TEXT)
+    can_initialize(
+        "nvidia/DeepSeek-R1-0528-FP4-v2",
+        hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=flashinfer_cutlass"],
+    )
 
 
 def test_deepseek_nvfp4_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_FP4", "1")
-    monkeypatch.setenv("VLLM_FLASHINFER_MOE_BACKEND", "latency")
-    can_initialize("nvidia/DeepSeek-R1-0528-FP4-v2", hf_overrides=HF_OVERRIDE_TEXT)
+    can_initialize(
+        "nvidia/DeepSeek-R1-0528-FP4-v2",
+        hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=flashinfer_trtllm"],
+    )
 
 
 ## GPT-OSS ##
@@ -172,21 +183,20 @@ def test_gptoss_mxfp4mxfp8_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch
     can_initialize("openai/gpt-oss-20b", hf_overrides=HF_OVERRIDE_TEXT)
 
 
-def test_gptoss_dp2_mxfp4mxfp8_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8", "1")
-    monkeypatch.setenv("VLLM_ALL2ALL_BACKEND", "deepep_high_throughput")
+def test_gptoss_eager(monkeypatch: pytest.MonkeyPatch):
     can_initialize(
         "openai/gpt-oss-20b",
-        extra_args=["--data-parallel-size", "2", "--enable-expert-parallel"],
         hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--enforce-eager"],
     )
 
 
-def test_gptoss_dp2_mxfp4bf16_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VLLM_USE_FLASHINFER_MOE_MXFP4_BF16", "1")
-    monkeypatch.setenv("VLLM_ALL2ALL_BACKEND", "deepep_high_throughput")
+## Qwen3 Next ##
+
+
+def test_qwen3_next_bf16_moe_flashinfer_trtllm(monkeypatch: pytest.MonkeyPatch):
     can_initialize(
-        "openai/gpt-oss-20b",
-        extra_args=["--data-parallel-size", "2", "--enable-expert-parallel"],
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
         hf_overrides=HF_OVERRIDE_TEXT,
+        extra_args=["--moe-backend=flashinfer_trtllm"],
     )
