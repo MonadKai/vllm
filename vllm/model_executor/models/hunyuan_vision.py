@@ -744,6 +744,23 @@ class HunYuanVLMultiModalProcessor(BaseMultiModalProcessor[HunYuanVLProcessingIn
 
         merge_size = image_processor.merge_size
 
+        # Consistency check: ensure merge_size matches spatial_merge_size
+        # from vision_config to avoid embedding/placeholder count mismatch
+        hf_config = self.info.get_hf_config()
+        spatial_merge_size = hf_config.vision_config.spatial_merge_size
+        if merge_size != spatial_merge_size:
+            logger.warning(
+                "HunYuanVL configuration mismatch detected: "
+                "image_processor.merge_size (%d) != "
+                "vision_config.spatial_merge_size (%d). "
+                "This may cause embedding count mismatches during inference. "
+                "Using spatial_merge_size (%d) for consistency.",
+                merge_size,
+                spatial_merge_size,
+                spatial_merge_size,
+            )
+            merge_size = spatial_merge_size
+
         def get_replacement_hunyuan_vl(item_idx: int, modality: str):
             out_item = out_mm_kwargs[modality][item_idx]
             grid_thw = out_item[f"{modality}_grid_thw"].data

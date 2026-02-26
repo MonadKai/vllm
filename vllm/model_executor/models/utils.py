@@ -454,6 +454,23 @@ def _merge_multimodal_embeddings(
     mm_embeds_flat = _flatten_embeddings(multimodal_embeddings)
     input_dtype = inputs_embeds.dtype
 
+    # Pre-check: Verify that the number of multimodal embeddings matches
+    # the number of placeholder positions. This check prevents cryptic CUDA
+    # errors from masked_scatter_ when sizes don't match.
+    num_actual_tokens = len(mm_embeds_flat)
+    num_expected_tokens = is_multimodal.sum().item()
+
+    if num_actual_tokens != num_expected_tokens:
+        expr = _embedding_count_expression(multimodal_embeddings)
+        raise ValueError(
+            f"Multimodal embedding size mismatch: "
+            f"got {expr} = {num_actual_tokens} embeddings, "
+            f"but {num_expected_tokens} placeholder positions. "
+            f"This may be caused by inconsistent configuration between "
+            f"the image processor (e.g., merge_size) and the vision encoder "
+            f"(e.g., spatial_merge_size). Please ensure these values match."
+        )
+
     try:
         # For debugging
         # inputs_embeds[is_multimodal] = mm_embeds_flat.to(dtype=input_dtype)
@@ -464,18 +481,11 @@ def _merge_multimodal_embeddings(
             is_multimodal.unsqueeze(-1), mm_embeds_flat.to(dtype=input_dtype)
         )
     except RuntimeError as e:
-        num_actual_tokens = len(mm_embeds_flat)
-        num_expected_tokens = is_multimodal.sum().item()
-
-        if num_actual_tokens != num_expected_tokens:
-            expr = _embedding_count_expression(multimodal_embeddings)
-
-            raise ValueError(
-                f"Attempted to assign {expr} = {num_actual_tokens} "
-                f"multimodal tokens to {num_expected_tokens} placeholders"
-            ) from e
-
-        raise ValueError("Error during masked scatter operation") from e
+        # This should not happen due to the pre-check above, but keep
+        # the error handling for any unexpected issues.
+        raise ValueError(
+            f"Error during masked scatter operation: {e}"
+        ) from e
 
     return inputs_embeds
 
