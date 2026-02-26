@@ -8,11 +8,10 @@ from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from pydantic import ConfigDict, Field, TypeAdapter, field_validator
-from pydantic.dataclasses import dataclass
+from pydantic import Field, TypeAdapter, field_validator
 
 import vllm.envs as envs
-from vllm.compilation.inductor_pass import CallableInductorPass, InductorPass
+from vllm.compilation.passes.inductor_pass import CallableInductorPass, InductorPass
 from vllm.config.utils import (
     Range,
     config,
@@ -31,9 +30,6 @@ else:
     VllmConfig = object
 
 logger = init_logger(__name__)
-
-# Explicitly exports Range
-__all__ = ["Range"]
 
 
 class CompilationMode(enum.IntEnum):
@@ -99,7 +95,6 @@ class CUDAGraphMode(enum.Enum):
 
 
 @config
-@dataclass(config=ConfigDict(extra="forbid"))
 class PassConfig:
     """Configuration for custom Inductor passes.
 
@@ -128,6 +123,10 @@ class PassConfig:
     """Enable async TP."""
     fuse_allreduce_rms: bool = Field(default=None)
     """Enable flashinfer allreduce fusion."""
+
+    # ROCm/AITER specific fusions
+    fuse_act_padding: bool = Field(default=None)
+    """Fuse the custom RMSNorm + padding ops."""
 
     fi_allreduce_fusion_max_size_mb: float | None = None
     """The threshold of the communicated tensor sizes under which
@@ -171,7 +170,9 @@ class PassConfig:
 
     @staticmethod
     def default_fi_allreduce_fusion_max_size_mb() -> dict[int, float]:
-        from vllm.compilation.collective_fusion import FI_ALLREDUCE_FUSION_MAX_SIZE_MB
+        from vllm.compilation.passes.fusion.allreduce_rms_fusion import (
+            FI_ALLREDUCE_FUSION_MAX_SIZE_MB,
+        )
         from vllm.platforms import current_platform
 
         if not current_platform.is_cuda():
@@ -197,6 +198,7 @@ class PassConfig:
         "enable_sp",
         "fuse_gemm_comms",
         "fuse_allreduce_rms",
+        "fuse_act_padding",
         mode="wrap",
     )
     @classmethod
@@ -225,12 +227,23 @@ class PassConfig:
                     "Fusion enabled but reshape elimination disabled. "
                     "Allreduce + rms norm + quant (fp8) fusion might not work"
                 )
+            if self.fuse_act_padding:
+                logger.warning_once(
+                    "Fusion enabled but reshape elimination disabled. "
+                    "RMSNorm + padding fusion might not work"
+                )
         if self.enable_qk_norm_rope_fusion and not current_platform.is_cuda_alike():
             logger.warning_once(
                 "QK Norm + RoPE fusion enabled but the current platform is not "
                 "CUDA or ROCm. The fusion will be disabled."
             )
             self.enable_qk_norm_rope_fusion = False
+        if self.fuse_act_padding and not current_platform.is_rocm():
+            logger.warning_once(
+                "Padding fusion enabled but the current platform is not ROCm. "
+                "The fusion will be disabled."
+            )
+            self.fuse_act_padding = False
 
 
 class DynamicShapesType(str, enum.Enum):
@@ -254,7 +267,6 @@ class DynamicShapesType(str, enum.Enum):
 
 
 @config
-@dataclass(config=ConfigDict(extra="forbid"))
 class DynamicShapesConfig:
     """Configuration to control/debug torch compile dynamic shapes."""
 
@@ -280,9 +292,10 @@ class DynamicShapesConfig:
     until this change picked up https://github.com/pytorch/pytorch/pull/169239.
     """
 
-    assume_32_bit_indexing: bool = True
+    assume_32_bit_indexing: bool = False
     """
     whether all tensor sizes can use 32 bit indexing.
+    `True` requires PyTorch 2.10+
     """
 
     def compute_hash(self) -> str:
@@ -297,7 +310,6 @@ class DynamicShapesConfig:
 
 
 @config
-@dataclass(config=ConfigDict(extra="forbid"))
 class CompilationConfig:
     """Configuration for compilation.
 
@@ -556,7 +568,7 @@ class CompilationConfig:
     pass_config: PassConfig = field(default_factory=PassConfig)
     """Custom inductor passes, see PassConfig for more details"""
 
-    max_cudagraph_capture_size: int | None = field(default=None)
+    max_cudagraph_capture_size: int = field(default=None)
     """The maximum cudagraph capture size.
 
     If cudagraph_capture_sizes is specified, this will be set to the largest
@@ -581,7 +593,7 @@ class CompilationConfig:
     local_cache_dir: str = field(default=None, init=False)  # type: ignore
     """local cache dir for each rank"""
 
-    fast_moe_cold_start = True
+    fast_moe_cold_start: bool | None = None
     """Optimization for fast MOE cold start.
 
     This is a bit of a hack that assumes that:
@@ -592,8 +604,14 @@ class CompilationConfig:
     When the above two conditions hold, this option greatly decreases cold start
     time for MOE models.
 
-    If the above two conditions don't hold, then this option will lead to silent
-    incorrectness. The only condition in which this doesn't hold is speculative
+    The options are:
+    - True: optimization is always on
+    - False: optimization is always off
+    - None: optimization is on usually but off for speculative decoding
+
+    If conditions 1&2 don't hold then this option will lead to silent
+    incorrectness.
+    The only condition in which this doesn't hold is speculative
     decoding, where there is a draft model that may have MOEs in them.
 
     NB: We're working on a longer-term solution that doesn't need these assumptions.
@@ -747,6 +765,7 @@ class CompilationConfig:
         "level",
         "mode",
         "cudagraph_mode",
+        "max_cudagraph_capture_size",
         "use_inductor_graph_partition",
         mode="wrap",
     )
@@ -781,10 +800,9 @@ class CompilationConfig:
         #    and it is not yet a priority. RFC here:
         #    https://github.com/vllm-project/vllm/issues/14703
 
-        if is_torch_equal_or_newer("2.6"):
-            KEY = "enable_auto_functionalized_v2"
-            if KEY not in self.inductor_compile_config:
-                self.inductor_compile_config[KEY] = False
+        KEY = "enable_auto_functionalized_v2"
+        if KEY not in self.inductor_compile_config:
+            self.inductor_compile_config[KEY] = False
 
         for k, v in self.inductor_passes.items():
             if not isinstance(v, str):
