@@ -91,6 +91,8 @@ from vllm.entrypoints.utils import (
     process_lora_modules,
     with_cancellation,
 )
+from vllm.entrypoints.tei.serving_tei_embed import TeiServingEmbed
+from vllm.entrypoints.tei.serving_tei_rerank import TeiServingRerank
 from vllm.logger import init_logger
 from vllm.reasoning import ReasoningParserManager
 from vllm.tasks import POOLING_TASKS
@@ -1216,6 +1218,19 @@ async def init_app_state(
         if "embed" in supported_tasks
         else None
     )
+    state.tei_serving_embed = (
+        TeiServingEmbed(
+            engine_client,
+            state.openai_serving_models,
+            request_logger=request_logger,
+            chat_template=resolved_chat_template,
+            chat_template_content_format=args.chat_template_content_format,
+            trust_request_chat_template=args.trust_request_chat_template,
+            log_error_stack=args.log_error_stack,
+        )
+        if "embed" in supported_tasks
+        else None
+    )
     state.openai_serving_classification = (
         ServingClassification(
             engine_client,
@@ -1231,6 +1246,16 @@ async def init_app_state(
     )
     state.openai_serving_scores = (
         ServingScores(
+            engine_client,
+            state.openai_serving_models,
+            request_logger=request_logger,
+            log_error_stack=args.log_error_stack,
+        )
+        if ("embed" in supported_tasks or "score" in supported_tasks)
+        else None
+    )
+    state.tei_serving_rerank = (
+        TeiServingRerank(
             engine_client,
             state.openai_serving_models,
             request_logger=request_logger,

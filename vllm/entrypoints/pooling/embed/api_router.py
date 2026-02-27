@@ -14,6 +14,8 @@ from vllm.entrypoints.pooling.embed.protocol import (
     EmbeddingResponse,
 )
 from vllm.entrypoints.pooling.embed.serving import OpenAIServingEmbedding
+from vllm.entrypoints.tei.serving_tei_embed import TeiServingEmbed
+from vllm.entrypoints.tei.protocol import EmbedRequest as TeiEmbedRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 
 router = APIRouter()
@@ -21,6 +23,9 @@ router = APIRouter()
 
 def embedding(request: Request) -> OpenAIServingEmbedding | None:
     return request.app.state.openai_serving_embedding
+
+def tei_embed(request: Request) -> TeiServingEmbed | None:
+    return request.app.state.tei_serving_embed
 
 
 @router.post(
@@ -65,3 +70,28 @@ async def create_embedding(
         )
 
     assert_never(generator)
+
+
+@router.post(
+    "/tei/embed",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_embed(request: TeiEmbedRequest, raw_request: Request):
+    handler = tei_embed(raw_request)
+    if handler is None:
+        base_server = raw_request.app.state.openai_serving_tokenization
+        return base_server.create_error_response(
+            message="The model does not support Embeddings API"
+        )
+
+    generator = await handler.embed(request, raw_request)
+
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)
