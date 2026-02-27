@@ -15,6 +15,8 @@ from vllm.entrypoints.pooling.score.protocol import (
     ScoreResponse,
 )
 from vllm.entrypoints.pooling.score.serving import ServingScores
+from vllm.entrypoints.tei.serving_tei_rerank import TeiServingRerank
+from vllm.entrypoints.tei.protocol import RerankRequest as TeiRerankRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 from vllm.logger import init_logger
 
@@ -29,6 +31,10 @@ def score(request: Request) -> ServingScores | None:
 
 def rerank(request: Request) -> ServingScores | None:
     return request.app.state.openai_serving_scores
+
+
+def tei_rerank(request: Request) -> TeiServingRerank | None:
+    return request.app.state.tei_serving_rerank
 
 
 @router.post(
@@ -147,3 +153,27 @@ async def do_rerank_v1(request: RerankRequest, raw_request: Request):
 @with_cancellation
 async def do_rerank_v2(request: RerankRequest, raw_request: Request):
     return await do_rerank(request, raw_request)
+
+
+@router.post(
+    "/tei/rerank",
+    dependencies=[Depends(validate_json_request)],
+    responses={
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@with_cancellation
+@load_aware_call
+async def tei_router_rerank(request: TeiRerankRequest, raw_request: Request):
+    handler = tei_rerank(raw_request)
+    if handler is None:
+        base_server = raw_request.app.state.openai_serving_tokenization
+        return base_server.create_error_response(
+            message="The model does not support Rerank (Score) API"
+        )
+
+    generator = await handler.rerank(request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(), status_code=generator.code)
+    return JSONResponse(content=generator)

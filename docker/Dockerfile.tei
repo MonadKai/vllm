@@ -1,0 +1,14 @@
+FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.13.0
+
+
+ARG VLLM_PATH="/usr/local/lib/python3.12/dist-packages/vllm"
+
+# add tei serving handler
+COPY vllm/entrypoints/tei ${VLLM_PATH}/entrypoints/tei
+
+# add tei serving router
+COPY vllm/entrypoints/pooling/embed/api_router.py ${VLLM_PATH}/entrypoints/pooling/embed/api_router.py
+COPY vllm/entrypoints/pooling/score/api_router.py ${VLLM_PATH}/entrypoints/pooling/score/api_router.py
+COPY vllm/entrypoints/openai/api_server.py ${VLLM_PATH}/entrypoints/openai/api_server.py
+
+ENTRYPOINT ["vllm", "serve"]
