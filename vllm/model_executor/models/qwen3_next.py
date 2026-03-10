@@ -104,7 +104,10 @@ class Qwen3NextSparseMoeBlock(nn.Module):
     def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 
-        config = vllm_config.model_config.hf_config
+        # Use hf_text_config so nested configs (e.g. Qwen3.5 MoE multimodal)
+        # get the text sub-config with num_experts; for text-only models this
+        # equals hf_config.
+        config = vllm_config.model_config.hf_text_config
         parallel_config = vllm_config.parallel_config
         quant_config = vllm_config.quant_config
 
@@ -175,7 +178,7 @@ class Qwen3NextSparseMoeBlock(nn.Module):
             hidden_size=config.hidden_size,
             intermediate_size=config.moe_intermediate_size,
             reduce_results=False,
-            renormalize=config.norm_topk_prob,
+            renormalize=getattr(config, "norm_topk_prob", True),
             quant_config=quant_config,
             prefix=f"{prefix}.experts",
             enable_eplb=self.enable_eplb,
