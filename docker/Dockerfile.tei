@@ -1,5 +1,4 @@
-FROM m.daocloud.io/quay.io/ascend/vllm-ascend:v0.13.0
-
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.13.0
 
 ARG VLLM_PATH="/usr/local/lib/python3.12/dist-packages/vllm"
 
