@@ -1,0 +1,23 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.14.0
+
+
+ARG VLLM_PATH="/usr/local/lib/python3.12/dist-packages/vllm"
+
+# add qwen3.5 transformers configs
+COPY vllm/transformers_utils/configs/qwen3_5.py ${VLLM_PATH}/transformers_utils/configs/qwen3_5.py
+COPY vllm/transformers_utils/configs/qwen3_5_moe.py ${VLLM_PATH}/transformers_utils/configs/qwen3_5_moe.py
+COPY vllm/transformers_utils/configs/__init__.py ${VLLM_PATH}/transformers_utils/configs/__init__.py
+COPY vllm/transformers_utils/config.py ${VLLM_PATH}/transformers_utils/config.py
+
+
+# add qwen3.5 transformers models, we need to enhance qwen3_next model to support qwen3.5
+COPY vllm/model_executor/models/qwen3_next.py ${VLLM_PATH}/model_executor/models/qwen3_next.py
+COPY vllm/model_executor/models/qwen3_5.py ${VLLM_PATH}/model_executor/models/qwen3_5.py
+COPY vllm/model_executor/models/qwen3_5_mtp.py ${VLLM_PATH}/model_executor/models/qwen3_5_mtp.py
+COPY vllm/model_executor/models/registry.py ${VLLM_PATH}/model_executor/models/registry.py
+
+# enhance qwen3.5 transformers layers
+COPY vllm/model_executor/layers/linear.py ${VLLM_PATH}/model_executor/layers/linear.py
+COPY vllm/model_executor/layers/mamba/abstract.py ${VLLM_PATH}/model_executor/layers/mamba/abstract.py
+
+ENTRYPOINT ["vllm", "serve"]
