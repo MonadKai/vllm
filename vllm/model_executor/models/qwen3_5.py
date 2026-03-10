@@ -26,6 +26,7 @@
 
 import typing
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 
 import torch
 from einops import rearrange
@@ -45,8 +46,6 @@ from vllm.model_executor.layers.layernorm import (
 from vllm.model_executor.layers.linear import MergedColumnParallelLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.mamba.mamba_utils import (
-    MambaStateCopyFunc,
-    MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
 )
@@ -540,11 +539,9 @@ class Qwen3_5ForCausalLMBase(
         cache_config = vllm_config.cache_config
 
         scheduler_config = vllm_config.scheduler_config
-        if cache_config.mamba_cache_mode == "all":
-            raise NotImplementedError(
-                "Qwen3.5 currently does not support 'all' prefix caching, "
-                "please use '--mamba-cache-mode=align' instead"
-            )
+        assert not cache_config.enable_prefix_caching, (
+            "Qwen3.5 currently does not support prefix caching"
+        )
         self.quant_config = vllm_config.quant_config
 
         super().__init__()
@@ -635,6 +632,18 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
         "in_proj_qkvz": ["in_proj_qkv", "in_proj_z"],
         "in_proj_ba": ["in_proj_b", "in_proj_a"],
     }
+
+    def _mark_tower_model(self, vllm_config: VllmConfig, modalities: set[str]):
+        """Context manager for marking tower (e.g. vision) submodule creation.
+        v0.14.0 has no corresponding protocol implementation, use empty context to compatible with construction logic.
+        """
+        return nullcontext()
+
+    def _mark_language_model(self, vllm_config: VllmConfig):
+        """Context manager for marking language model submodule creation.
+        v0.14.0 has no corresponding protocol implementation, use empty context to compatible with construction logic.
+        """
+        return nullcontext()
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "model"):
         # protocols have not __init__ method, so we need to use nn.Module.__init__
@@ -758,9 +767,7 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
         vllm_config: "VllmConfig",
     ) -> tuple[torch.dtype, torch.dtype]:
         return MambaStateDtypeCalculator.gated_delta_net_state_dtype(
-            vllm_config.model_config.dtype,
-            vllm_config.cache_config.mamba_cache_dtype,
-            vllm_config.cache_config.mamba_ssm_cache_dtype,
+            vllm_config.model_config.dtype, vllm_config.cache_config.mamba_cache_dtype
         )
 
     @classmethod
@@ -784,10 +791,6 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
             hf_config.linear_conv_kernel_dim,
             num_spec,
         )
-
-    @classmethod
-    def get_mamba_state_copy_func(cls) -> tuple[MambaStateCopyFunc, MambaStateCopyFunc]:
-        return MambaStateCopyFuncCalculator.gated_delta_net_state_copy_func()
 
 
 ########################################################
