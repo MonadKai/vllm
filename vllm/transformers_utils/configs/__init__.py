@@ -50,6 +50,10 @@ _CLASS_TO_MODULE: dict[str, str] = {
     "Step3VisionEncoderConfig": "vllm.transformers_utils.configs.step3_vl",
     "Step3TextConfig": "vllm.transformers_utils.configs.step3_vl",
     "Qwen3NextConfig": "vllm.transformers_utils.configs.qwen3_next",
+    "Qwen3_5Config": "vllm.transformers_utils.configs.qwen3_5",
+    "Qwen3_5TextConfig": "vllm.transformers_utils.configs.qwen3_5",
+    "Qwen3_5MoeConfig": "vllm.transformers_utils.configs.qwen3_5_moe",
+    "Qwen3_5MoeTextConfig": "vllm.transformers_utils.configs.qwen3_5_moe",
     "Tarsier2Config": "vllm.transformers_utils.configs.tarsier2",
     # Special case: DeepseekV3Config is from HuggingFace Transformers
     "DeepseekV3Config": "transformers",
@@ -89,6 +93,10 @@ __all__ = [
     "Step3VisionEncoderConfig",
     "Step3TextConfig",
     "Qwen3NextConfig",
+    "Qwen3_5Config",
+    "Qwen3_5TextConfig",
+    "Qwen3_5MoeConfig",
+    "Qwen3_5MoeTextConfig",
     "Tarsier2Config",
 ]
 
