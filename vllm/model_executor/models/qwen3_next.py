@@ -966,7 +966,24 @@ class Qwen3NextDecoderLayer(nn.Module):
         return hidden_states, residual
 
 
-@support_torch_compile
+def _qwen3_next_enable_torch_compile(vllm_config: VllmConfig) -> bool:
+    """Disable torch.compile when using FP8 to avoid CUDA_ERROR_ILLEGAL_ADDRESS in
+    fp8_gemm_nt with inductor-generated reinterpret_tensor under concurrent batches.
+    """
+    if vllm_config.quant_config is None:
+        return True
+    return vllm_config.quant_config.get_name() != "fp8"
+
+
+@support_torch_compile(
+    dynamic_arg_dims={
+        "input_ids": 0,
+        "positions": -1,
+        "intermediate_tensors": 0,
+        "inputs_embeds": 0,
+    },
+    enable_if=_qwen3_next_enable_torch_compile,
+)
 class Qwen3NextModel(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
