@@ -44,6 +44,9 @@ from vllm.model_executor.models.interfaces import (
 )
 from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.models.qwen3 import Qwen3ForCausalLM
+from vllm.model_executor.models.qwen2_5_omni_thinker import (
+    Qwen2_5OmniThinkerMultiModalProcessor,
+)
 from vllm.model_executor.models.qwen3_omni_moe_thinker import (
     Qwen2_5OmniAudioFeatureInputs,
     Qwen3OmniMoeAudioEncoder,
@@ -198,6 +201,30 @@ class Qwen3ASRMultiModalDataParser(MultiModalDataParser):
         return super()._parse_audio_data(data)
 
 
+# Fallback minimum audio length (samples). Used only when feature_extractor has no n_fft.
+# - Effect: audio shorter than this is zero-padded to this length before feature extraction.
+# - Too small (< n_fft, e.g. 0): WhisperFeatureExtractor can fail (mel/STFT needs at least n_fft).
+# - 480 = 3 * hop_length(160): satisfies n_fft(400) and aligns to frame step for consistency.
+# - Larger (e.g. 800, 1600): for streaming, very short segments (e.g. tail) get more padding;
+#   can sometimes improve transcription of the last bit of a segment at the cost of extra silence.
+#   For "missing chars" in the middle of file, prefer increasing segment_duration_s in realtime buffer.
+_ASR_MIN_AUDIO_SAMPLES = 480
+
+
+def _pad_audio_to_min_length(
+    audio: np.ndarray, min_samples: int
+) -> np.ndarray:
+    """Pad audio to at least min_samples so feature extractor does not fail."""
+    if audio.shape[0] >= min_samples:
+        return audio
+    return np.pad(
+        audio,
+        (0, min_samples - audio.shape[0]),
+        mode="constant",
+        constant_values=0,
+    )
+
+
 class Qwen3ASRMultiModalProcessor(
     Qwen3OmniMoeThinkerMultiModalProcessor,
 ):
@@ -207,6 +234,48 @@ class Qwen3ASRMultiModalProcessor(
         hf_processor_mm_kwargs: Mapping[str, object],
     ) -> Mapping[str, MultiModalFieldConfig]:
         return _qwen3asr_field_config(hf_inputs)
+
+    def _call_hf_processor(
+        self,
+        prompt: str,
+        mm_data: Mapping[str, object],
+        mm_kwargs: Mapping[str, object],
+        tok_kwargs: Mapping[str, object],
+    ) -> BatchFeature:
+        """Call Qwen3ASRProcessor with audios->audio and min-length padding.
+
+        Skips Qwen3Omni pad_to_hop_length and version logic; pads short audio
+        so WhisperFeatureExtractor does not fail on very short clips.
+        """
+        mm_data = dict(mm_data)
+        audios = mm_data.pop("audios", [])
+
+        if audios:
+            feature_extractor = self.info.get_feature_extractor(**mm_kwargs)
+            n_fft = int(
+                getattr(feature_extractor, "n_fft", _ASR_MIN_AUDIO_SAMPLES)
+                or _ASR_MIN_AUDIO_SAMPLES
+            )
+            # At least _ASR_MIN_AUDIO_SAMPLES so short clips align to hop_length (e.g. 480=3*160)
+            min_samples = max(n_fft, _ASR_MIN_AUDIO_SAMPLES)
+            padded: list[np.ndarray] = []
+            for audio in audios:
+                if isinstance(audio, np.ndarray):
+                    arr = audio
+                elif isinstance(audio, tuple):
+                    arr = np.asarray(audio[0], dtype=np.float32)
+                else:
+                    arr = np.asarray(audio, dtype=np.float32)
+                padded.append(_pad_audio_to_min_length(arr, min_samples))
+            mm_data["audio"] = padded
+
+        return Qwen2_5OmniThinkerMultiModalProcessor._call_hf_processor(
+            self,
+            prompt=prompt,
+            mm_data=mm_data,
+            mm_kwargs=mm_kwargs,
+            tok_kwargs=tok_kwargs,
+        )
 
     def _get_prompt_updates(
         self,

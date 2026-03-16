@@ -1,0 +1,10 @@
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.17.0
+
+RUN pip install soxr librosa soundfile -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+ARG VLLM_PATH="/usr/local/lib/python3.12/dist-packages/vllm"
+
+COPY vllm/model_executor/models/qwen3_asr.py ${VLLM_PATH}/model_executor/models/qwen3_asr.py
+COPY vllm/model_executor/models/qwen3_asr_realtime.py ${VLLM_PATH}/model_executor/models/qwen3_asr_realtime.py
+
+ENTRYPOINT ["vllm", "serve"]
