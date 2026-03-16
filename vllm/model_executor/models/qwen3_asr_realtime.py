@@ -52,6 +52,10 @@ logger = init_logger(__name__)
 
 _PRE_ALLOCATE_BUFFER_SIZE_IN_S = 60
 
+# Segment length (seconds) for streaming. Larger = fewer mid-word cuts and often fewer missing chars,
+# but higher latency. Try 8.0 or 10.0 if transcription drops characters at segment boundaries.
+SEGMENT_DURATION_S = 5.0
+
 
 class Qwen3ASRRealtimeBuffer:
     """Audio buffer for Qwen3-ASR realtime streaming.
@@ -196,11 +200,9 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
         sampling_rate = feature_extractor.sampling_rate
         tokenizer = cached_tokenizer_from_config(model_config)
 
-        # Use a small segment size for low-latency streaming.
-        segment_duration_s = 5.0
         buffer = Qwen3ASRRealtimeBuffer(
             sampling_rate=sampling_rate,
-            segment_duration_s=segment_duration_s,
+            segment_duration_s=SEGMENT_DURATION_S,
         )
 
         audio_placeholder = cls.get_placeholder_str("audio", 0)
