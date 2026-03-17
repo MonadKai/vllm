@@ -777,6 +777,12 @@ class SyncMPClient(MPClient):
                     else:
                         outputs_queue.put_nowait(outputs)
             except Exception as e:
+                logger.exception(
+                    "EngineCore output loop failed (root cause of EngineDeadError): "
+                    "%s: %s",
+                    type(e).__name__,
+                    e,
+                )
                 outputs_queue.put_nowait(e)
             finally:
                 # Close sockets.
@@ -989,10 +995,20 @@ class AsyncMPClient(MPClient):
 
                     if outputs.outputs or outputs.scheduler_stats:
                         outputs_queue.put_nowait(outputs)
-            except Exception as e:
-                outputs_queue.put_nowait(e)
             except asyncio.CancelledError:
+                logger.warning(
+                    "EngineCore output queue task was cancelled; "
+                    "propagating EngineDeadError to waiting requests."
+                )
                 outputs_queue.put_nowait(EngineDeadError())
+            except Exception as e:
+                logger.exception(
+                    "EngineCore output loop failed (root cause of EngineDeadError): "
+                    "%s: %s",
+                    type(e).__name__,
+                    e,
+                )
+                outputs_queue.put_nowait(e)
 
         resources.output_queue_task = asyncio.create_task(
             process_outputs_socket(), name="EngineCoreOutputQueueTask"
@@ -1680,3 +1696,4 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             "[Elastic EP] Scale down completed, new data parallel size: %s",
             new_data_parallel_size,
         )
+

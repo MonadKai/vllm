@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import copy
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -437,11 +438,15 @@ class OutputProcessor:
         return len(self.request_states) > 0
 
     def propagate_error(self, e: Exception):
-        """Propagate error to all generate() tasks."""
+        """Propagate error to all generate() tasks.
 
+        Each request gets its own exception instance so that when multiple
+        concurrent tasks raise, they do not mutate a shared exception's
+        __traceback__ and produce an excessively long/repeated stack trace.
+        """
         for _, state in self.request_states.items():
             assert state.queue is not None
-            state.queue.put(e)
+            state.queue.put(copy.copy(e))
 
     def abort_requests(self, request_ids: Iterable[str], internal: bool) -> list[str]:
         """Abort a list of requests.
@@ -805,3 +810,4 @@ class OutputProcessor:
         ParentRequest.observe_finished_request(
             req_state.parent_req, iteration_stats, req_state.stats.num_generation_tokens
         )
+
