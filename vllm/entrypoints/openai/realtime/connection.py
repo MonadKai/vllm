@@ -58,8 +58,16 @@ class RealtimeConnection:
         logger.debug("WebSocket connection accepted: %s", self.connection_id)
         self._is_connected = True
 
-        # Send session created event
-        await self.send(SessionCreated())
+        # Send session created event (client may have already closed, e.g. 1012)
+        try:
+            await self.send(SessionCreated())
+        except WebSocketDisconnect:
+            logger.debug(
+                "Client disconnected before SessionCreated: %s",
+                self.connection_id,
+            )
+            await self.cleanup()
+            return
 
         try:
             while True:
@@ -263,9 +271,15 @@ class RealtimeConnection:
         await self.websocket.send_text(data)
 
     async def send_error(self, message: str, code: str | None = None):
-        """Send error event to client."""
-        error_event = ErrorEvent(error=message, code=code)
-        await self.websocket.send_text(error_event.model_dump_json())
+        """Send error event to client. No-op if client already disconnected."""
+        try:
+            error_event = ErrorEvent(error=message, code=code)
+            await self.websocket.send_text(error_event.model_dump_json())
+        except WebSocketDisconnect:
+            logger.debug(
+                "Skip sending error to client (already disconnected): %s",
+                self.connection_id,
+            )
 
     async def cleanup(self):
         """Cleanup resources."""
