@@ -7,4 +7,7 @@ ARG VLLM_PATH="/usr/local/lib/python3.12/dist-packages/vllm"
 COPY vllm/model_executor/models/qwen3_asr.py ${VLLM_PATH}/model_executor/models/qwen3_asr.py
 COPY vllm/model_executor/models/qwen3_asr_realtime.py ${VLLM_PATH}/model_executor/models/qwen3_asr_realtime.py
 
+COPY vllm/v1/engine/core_client.py ${VLLM_PATH}/v1/engine/core_client.py
+COPY vllm/v1/engine/output_processor.py ${VLLM_PATH}/v1/engine/output_processor.py
+
 ENTRYPOINT ["vllm", "serve"]
