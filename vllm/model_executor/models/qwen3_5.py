@@ -659,13 +659,19 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
         self.is_multimodal_pruning_enabled = False
 
         with self._mark_tower_model(vllm_config, {"image", "video"}):
-            self.visual = Qwen3_VisionTransformer(
-                config.vision_config,
-                norm_eps=getattr(config, "rms_norm_eps", 1e-6),
-                quant_config=quant_config,
-                multimodal_config=multimodal_config,
-                prefix=maybe_prefix(prefix, "visual"),
-            )
+            if (
+                multimodal_config.get_limit_per_prompt("image") == 0
+                and multimodal_config.get_limit_per_prompt("video") == 0
+            ):
+                self.visual = None
+            else:
+                self.visual = Qwen3_VisionTransformer(
+                    config.vision_config,
+                    norm_eps=getattr(config, "rms_norm_eps", 1e-6),
+                    quant_config=quant_config,
+                    multimodal_config=multimodal_config,
+                    prefix=maybe_prefix(prefix, "visual"),
+                )
 
         with self._mark_language_model(vllm_config):
             self.language_model = Qwen3_5ForCausalLM(
@@ -755,9 +761,15 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        skip_prefixes = ["mtp."]
+        if (
+            self.multimodal_config.get_limit_per_prompt("image") == 0
+            and self.multimodal_config.get_limit_per_prompt("video") == 0
+        ):
+            skip_prefixes.append("visual.")
         loader = AutoWeightsLoader(
             self,
-            skip_prefixes=["mtp."],
+            skip_prefixes=skip_prefixes,
         )
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
@@ -866,13 +878,19 @@ class Qwen3_5MoeForConditionalGeneration(
         self.is_multimodal_pruning_enabled = False
 
         with self._mark_tower_model(vllm_config, {"image", "video"}):
-            self.visual = Qwen3_VisionTransformer(
-                config.vision_config,
-                norm_eps=getattr(config, "rms_norm_eps", 1e-6),
-                quant_config=quant_config,
-                multimodal_config=multimodal_config,
-                prefix=maybe_prefix(prefix, "visual"),
-            )
+            if (
+                multimodal_config.get_limit_per_prompt("image") == 0
+                and multimodal_config.get_limit_per_prompt("video") == 0
+            ):
+                self.visual = None
+            else:
+                self.visual = Qwen3_VisionTransformer(
+                    config.vision_config,
+                    norm_eps=getattr(config, "rms_norm_eps", 1e-6),
+                    quant_config=quant_config,
+                    multimodal_config=multimodal_config,
+                    prefix=maybe_prefix(prefix, "visual"),
+                )
 
         with self._mark_language_model(vllm_config):
             self.language_model = Qwen3_5MoeForCausalLM(
