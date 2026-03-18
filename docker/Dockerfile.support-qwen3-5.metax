@@ -6,7 +6,10 @@ ARG VLLM_PATH="/opt/conda/lib/python3.12/site-packages/vllm"
 # set vllm-metax path
 ARG VLLM_METAX_PATH="/opt/conda/lib/python3.12/site-packages/vllm-metax"
 
+ARG PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+
+ARG PIP_INSTALL_COMMAND="/opt/conda/bin/pip install"
 # install soxr librosa soundfile
-RUN pip install soxr librosa soundfile -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN ${PIP_INSTALL_COMMAND} soxr librosa soundfile -i ${PIP_INDEX_URL}
 
 ENTRYPOINT ["vllm", "serve"]
