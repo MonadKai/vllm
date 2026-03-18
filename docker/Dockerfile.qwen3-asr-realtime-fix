@@ -10,5 +10,6 @@ COPY vllm/model_executor/models/qwen3_asr_realtime.py ${VLLM_PATH}/model_executo
 COPY vllm/v1/engine/core_client.py ${VLLM_PATH}/v1/engine/core_client.py
 COPY vllm/v1/engine/output_processor.py ${VLLM_PATH}/v1/engine/output_processor.py
 COPY vllm/entrypoints/openai/realtime/connection.py ${VLLM_PATH}/entrypoints/openai/realtime/connection.py
+COPY vllm/v1/core/sched/async_scheduler.py ${VLLM_PATH}/v1/core/sched/async_scheduler.py
 
 ENTRYPOINT ["vllm", "serve"]
