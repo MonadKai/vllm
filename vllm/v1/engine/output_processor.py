@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
-import copy
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -443,10 +442,17 @@ class OutputProcessor:
         Each request gets its own exception instance so that when multiple
         concurrent tasks raise, they do not mutate a shared exception's
         __traceback__ and produce an excessively long/repeated stack trace.
+        Create a new instance (do not use copy.copy) so the message stays
+        a single string and does not become a tuple.
         """
         for _, state in self.request_states.items():
             assert state.queue is not None
-            state.queue.put(copy.copy(e))
+            new_e = type(e)(*e.args, **{
+                k: getattr(e, k)
+                for k in ("suppress_context",)
+                if hasattr(e, k)
+            })
+            state.queue.put(new_e)
 
     def abort_requests(self, request_ids: Iterable[str], internal: bool) -> list[str]:
         """Abort a list of requests.
