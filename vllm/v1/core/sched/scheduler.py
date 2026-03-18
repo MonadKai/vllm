@@ -1354,12 +1354,20 @@ class Scheduler(SchedulerInterface):
             # Check for stop and update request status.
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(
-                    request, new_token_ids
+                    request,
+                    new_token_ids,
+                    num_tokens_scheduled=num_tokens_scheduled,
                 )
             elif request.pooling_params and pooler_output is not None:
                 # Pooling stops as soon as there is output.
                 request.status = RequestStatus.FINISHED_STOPPED
                 stopped = True
+            else:
+                # No generated tokens (e.g. prefill); still call so AsyncScheduler
+                # can update num_output_placeholders for prefill steps.
+                new_token_ids, stopped = self._update_request_with_output(
+                    request, [], num_tokens_scheduled=num_tokens_scheduled
+                )
 
             routed_experts = None
             finish_reason = None
@@ -1553,7 +1561,11 @@ class Scheduler(SchedulerInterface):
         return self.routed_experts_reader.get_routed_experts(indices=slot_mapping)
 
     def _update_request_with_output(
-        self, request: Request, new_token_ids: list[int]
+        self,
+        request: Request,
+        new_token_ids: list[int],
+        *,
+        num_tokens_scheduled: int = 0,
     ) -> tuple[list[int], bool]:
         # Append generated tokens and check for stop. Note that if
         # a request is still being prefilled, we expect the model runner
