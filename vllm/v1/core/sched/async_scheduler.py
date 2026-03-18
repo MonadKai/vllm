@@ -18,24 +18,32 @@ class AsyncScheduler(Scheduler):
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         super()._update_after_schedule(scheduler_output)
         spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
-        for req_id in scheduler_output.num_scheduled_tokens:
+        num_scheduled_tokens = scheduler_output.num_scheduled_tokens
+        for req_id in num_scheduled_tokens:
             request = self.requests[req_id]
-            if request.is_prefill_chunk:
-                continue
-
             scheduler_output.pending_structured_output_tokens |= (
                 request.use_structured_output and request.num_output_placeholders > 0
             )
-            # The request will generate a new token plus num_spec_tokens
-            # in this scheduling step.
-            cur_num_spec_tokens = len(spec_decode_tokens.get(req_id, ()))
-            request.num_output_placeholders += 1 + cur_num_spec_tokens
-            # Add placeholders for the new draft/spec tokens.
-            # We will update the actual spec token ids in the worker process.
-            request.spec_token_ids = self._spec_token_placeholders
+            if request.is_prefill_chunk:
+                # Prefill: add placeholders for the tokens we are processing
+                # so num_output_tokens + num_output_placeholders is correct
+                # in _make_cached_request_data (used for batch/position building).
+                request.num_output_placeholders += num_scheduled_tokens.get(
+                    req_id, 0
+                )
+            else:
+                # Decode: the request will generate one token plus spec tokens.
+                cur_num_spec_tokens = len(spec_decode_tokens.get(req_id, ()))
+                request.num_output_placeholders += 1 + cur_num_spec_tokens
+                # Add placeholders for the new draft/spec tokens.
+                request.spec_token_ids = self._spec_token_placeholders
 
     def _update_request_with_output(
-        self, request: Request, new_token_ids: list[int]
+        self,
+        request: Request,
+        new_token_ids: list[int],
+        *,
+        num_tokens_scheduled: int = 0,
     ) -> tuple[list[int], bool]:
         if request.discard_latest_async_tokens:
             # If the request is force preempted in reset_prefix_cache, we
@@ -45,16 +53,20 @@ class AsyncScheduler(Scheduler):
 
         status_before_update = request.status
         new_token_ids, stopped = super()._update_request_with_output(
-            request, new_token_ids
+            request,
+            new_token_ids,
+            num_tokens_scheduled=num_tokens_scheduled,
         )
 
-        # Update the number of output placeholders. Only decode steps add
-        # placeholders in _update_after_schedule; prefill chunks skip that,
-        # so we must not subtract here for prefill to avoid going negative.
-        if not request.is_prefill_chunk:
-            request.num_output_placeholders = max(
-                0, request.num_output_placeholders - len(new_token_ids)
-            )
+        # Update the number of output placeholders. Prefill: subtract the
+        # tokens we processed this step. Decode: subtract generated tokens.
+        if request.is_prefill_chunk:
+            to_subtract = num_tokens_scheduled
+        else:
+            to_subtract = len(new_token_ids)
+        request.num_output_placeholders = max(
+            0, request.num_output_placeholders - to_subtract
+        )
 
         # Cache the new tokens. Preempted requests should be skipped.
         if status_before_update == RequestStatus.RUNNING:

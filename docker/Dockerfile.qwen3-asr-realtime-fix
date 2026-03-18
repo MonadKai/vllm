@@ -11,5 +11,6 @@ COPY vllm/v1/engine/core_client.py ${VLLM_PATH}/v1/engine/core_client.py
 COPY vllm/v1/engine/output_processor.py ${VLLM_PATH}/v1/engine/output_processor.py
 COPY vllm/entrypoints/openai/realtime/connection.py ${VLLM_PATH}/entrypoints/openai/realtime/connection.py
 COPY vllm/v1/core/sched/async_scheduler.py ${VLLM_PATH}/v1/core/sched/async_scheduler.py
+COPY vllm/v1/core/sched/scheduler.py ${VLLM_PATH}/v1/core/sched/scheduler.py
 
 ENTRYPOINT ["vllm", "serve"]

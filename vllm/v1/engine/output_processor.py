@@ -29,6 +29,7 @@ from vllm.tracing import (
 from vllm.utils import length_from_prompt_token_ids_or_embeds
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
 from vllm.v1.engine.detokenizer import IncrementalDetokenizer
+from vllm.v1.engine.exceptions import EngineDeadError
 from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (
@@ -442,16 +443,21 @@ class OutputProcessor:
         Each request gets its own exception instance so that when multiple
         concurrent tasks raise, they do not mutate a shared exception's
         __traceback__ and produce an excessively long/repeated stack trace.
-        Create a new instance (do not use copy.copy) so the message stays
-        a single string and does not become a tuple.
+        For EngineDeadError, do not pass *e.args (its __init__ already sets
+        the message), or the new instance gets args=(msg, msg).
         """
         for _, state in self.request_states.items():
             assert state.queue is not None
-            new_e = type(e)(*e.args, **{
-                k: getattr(e, k)
-                for k in ("suppress_context",)
-                if hasattr(e, k)
-            })
+            if isinstance(e, EngineDeadError):
+                new_e = EngineDeadError(
+                    suppress_context=getattr(e, "__suppress_context__", False)
+                )
+            else:
+                new_e = type(e)(*e.args, **{
+                    k: getattr(e, k)
+                    for k in ("suppress_context",)
+                    if hasattr(e, k)
+                })
             state.queue.put(new_e)
 
     def abort_requests(self, request_ids: Iterable[str], internal: bool) -> list[str]:
