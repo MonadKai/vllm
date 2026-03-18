@@ -1,0 +1,12 @@
+# use public vllm-metax image
+FROM pub-registry1.metax-tech.com/ai-opentest/master/maca/vllm-metax:0.15.0-maca.ai20260227-177-torch2.8-py312-ubuntu22.04-amd64
+
+# set vllm path
+ARG VLLM_PATH="/opt/conda/lib/python3.12/site-packages/vllm"
+# set vllm-metax path
+ARG VLLM_METAX_PATH="/opt/conda/lib/python3.12/site-packages/vllm-metax"
+
+# install soxr librosa soundfile
+RUN pip install soxr librosa soundfile -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+ENTRYPOINT ["vllm", "serve"]
