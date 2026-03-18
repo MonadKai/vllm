@@ -48,9 +48,13 @@ class AsyncScheduler(Scheduler):
             request, new_token_ids
         )
 
-        # Update the number of output placeholders.
-        request.num_output_placeholders -= len(new_token_ids)
-        assert request.num_output_placeholders >= 0
+        # Update the number of output placeholders. Only decode steps add
+        # placeholders in _update_after_schedule; prefill chunks skip that,
+        # so we must not subtract here for prefill to avoid going negative.
+        if not request.is_prefill_chunk:
+            request.num_output_placeholders = max(
+                0, request.num_output_placeholders - len(new_token_ids)
+            )
 
         # Cache the new tokens. Preempted requests should be skipped.
         if status_before_update == RequestStatus.RUNNING:
