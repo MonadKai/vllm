@@ -315,6 +315,12 @@ class OpenAISpeechToText(OpenAIServing):
             if request.to_language
             else None
         )
+        # When streaming and to_language is unset, use input language for prompt
+        # so the model prompt includes "language X<|asr_text|>" and the stream
+        # only contains the transcription text (e.g. Qwen3-ASR).
+        to_language_for_prompt = to_language
+        if request.stream and to_language is None and language is not None:
+            to_language_for_prompt = language
 
         if len(audio_data) / 1024**2 > self.max_audio_filesize_mb:
             raise VLLMValidationError(
@@ -373,7 +379,7 @@ class OpenAISpeechToText(OpenAIServing):
                 language=language,
                 task_type=self.task_type,
                 request_prompt=request.prompt,
-                to_language=to_language,
+                to_language=to_language_for_prompt,
             )
 
             parsed_prompt: DictPrompt
