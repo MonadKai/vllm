@@ -12,4 +12,6 @@ COPY vllm/v1/engine/output_processor.py ${VLLM_PATH}/v1/engine/output_processor.
 COPY vllm/entrypoints/openai/realtime/connection.py ${VLLM_PATH}/entrypoints/openai/realtime/connection.py
 COPY vllm/v1/core/sched/async_scheduler.py ${VLLM_PATH}/v1/core/sched/async_scheduler.py
 
+COPY vllm/entrypoints/openai/speech_to_text/speech_to_text.py ${VLLM_PATH}/entrypoints/openai/speech_to_text/speech_to_text.py
+
 ENTRYPOINT ["vllm", "serve"]
