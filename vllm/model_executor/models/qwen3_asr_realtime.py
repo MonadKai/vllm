@@ -17,13 +17,15 @@
 """Inference-only Qwen3-ASR realtime model."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping
 
 import numpy as np
 import torch
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import ModelConfig, SpeechToTextConfig, VllmConfig
+from vllm.engine.protocol import StreamingInput
+from vllm.envs import VLLM_ENGINE_ITERATION_TIMEOUT_S
 from vllm.inputs.data import PromptType, TokensPrompt
 from vllm.logger import init_logger
 from vllm.model_executor.models.interfaces import (
@@ -34,6 +36,7 @@ from vllm.model_executor.models.qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRMultiModalProcessor,
     Qwen3ASRProcessingInfo,
+    _ASR_TEXT_TAG,
     _get_feat_extract_output_lengths,
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY
@@ -50,59 +53,165 @@ from vllm.transformers_utils.processor import cached_processor_from_config
 
 logger = init_logger(__name__)
 
-_PRE_ALLOCATE_BUFFER_SIZE_IN_S = 60
+# Default language name in generation prompt so model outputs only transcription
+# (no repeated "language Chinese<asr_text>" prefix per chunk).
+DEFAULT_REALTIME_LANGUAGE_NAME = "Chinese"
 
-# Segment length (seconds) for streaming. Larger = fewer mid-word cuts and often fewer missing chars,
-# but higher latency. Try 8.0 or 10.0 if transcription drops characters at segment boundaries.
+# Use a small segment size for low-latency streaming, with overlap at
+# boundaries to improve accuracy (like voxtral_realtime).
 SEGMENT_DURATION_S = 5.0
+
+# Overlap at segment boundaries (like voxtral_realtime); larger overlap
+# reduces 漏字 and 边界重复 at the cost of a bit more latency.
+DEFAULT_LOOK_BACK_S = 0.5
+DEFAULT_LOOK_AHEAD_S = 0.5
+
+# Max tokens of previous transcript as context; larger window helps avoid
+# dropping words at boundaries (漏字) and reduces boundary repetition.
+MAX_CONTEXT_TOKENS = 32
 
 
 class Qwen3ASRRealtimeBuffer:
-    """Audio buffer for Qwen3-ASR realtime streaming.
+    """Audio buffer for Qwen3-ASR realtime streaming (Voxtral-style).
 
-    Accumulates audio samples and yields segments when enough
-    audio has been buffered for processing.
+    Prompt per segment = prefix_before + last MAX_CONTEXT_TOKENS transcript
+    + prefix_after. Context is placed before the current audio in the user
+    message (prefix order) so the model sees "previous transcript → new audio".
+    Fixed frame_size with look_back/look_ahead overlap, leftover for sliding.
     """
 
-    def __init__(self, sampling_rate: int, segment_duration_s: float = 5.0):
+    def __init__(
+        self,
+        sampling_rate: int,
+        segment_duration_s: float,
+        look_back_s: float,
+        look_ahead_s: float,
+        prompt_token_ids_before_context: list[int],
+        prompt_token_ids_after_context: list[int],
+        *,
+        token_output_queue: asyncio.Queue[list[int]] | None = None,
+    ):
         self._sampling_rate = sampling_rate
         self._segment_size = int(segment_duration_s * sampling_rate)
+        self._look_back_samples = int(look_back_s * sampling_rate)
+        self._look_ahead_samples = int(look_ahead_s * sampling_rate)
+        self._overlap_samples = (
+            self._look_back_samples + self._look_ahead_samples
+        )
+        self._frame_size = self._segment_size + self._overlap_samples
+        self._stride = self._segment_size
 
-        self._buffer_size = _PRE_ALLOCATE_BUFFER_SIZE_IN_S * sampling_rate
-        self._buffer: np.ndarray = np.empty(self._buffer_size, dtype=np.float32)
-        self._filled_len = 0
+        self._prompt_token_ids_before_context = list(
+            prompt_token_ids_before_context
+        )
+        self._prompt_token_ids_after_context = list(
+            prompt_token_ids_after_context
+        )
+        self._accumulated_output_tokens: list[int] = []
+        self._last_yield_accumulated_len = -1
 
-    def write_audio(self, audio: np.ndarray) -> None:
-        put_end = self._filled_len + len(audio)
-        if put_end > self._buffer_size:
-            new_size = max(self._buffer_size * 2, put_end)
-            new_buffer = np.empty(new_size, dtype=np.float32)
-            new_buffer[: self._filled_len] = self._buffer[: self._filled_len]
-            self._buffer = new_buffer
-            self._buffer_size = new_size
+        self._audio_queue: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
+        self._leftover: np.ndarray | None = None
+        self._token_output_queue = token_output_queue
 
-        self._buffer[self._filled_len : put_end] = audio
-        self._filled_len = put_end
+    async def _wait_previous_segment_output(self, timeout_s: float = 10.0) -> None:
+        """Wait until feed_tokens has drained token_output_queue.
 
-    def read_audio(self) -> np.ndarray | None:
-        if self._filled_len < self._segment_size:
-            return None
+        Connection puts once per delta; wait until queue is empty so
+        accumulated has the full previous output before building next prompt.
+        """
+        if self._last_yield_accumulated_len < 0:
+            return
+        if self._token_output_queue is None:
+            for _ in range(30):
+                await asyncio.sleep(0)
+            return
+        elapsed = 0.0
+        poll_s = 0.01
+        while not self._token_output_queue.empty() and elapsed < timeout_s:
+            await asyncio.sleep(poll_s)
+            elapsed += poll_s
 
-        segment = self._buffer[: self._segment_size].copy()
-        remaining = self._filled_len - self._segment_size
-        if remaining > 0:
-            self._buffer[:remaining] = self._buffer[
-                self._segment_size : self._filled_len
-            ]
-        self._filled_len = remaining
-        return segment
+    async def append_audio(self, audio_array: np.ndarray | None) -> None:
+        await self._audio_queue.put(audio_array)
 
-    def flush(self) -> np.ndarray | None:
-        if self._filled_len == 0:
-            return None
-        audio = self._buffer[: self._filled_len].copy()
-        self._filled_len = 0
-        return audio
+    async def append_tokens(self, tokens: Iterable[int]) -> None:
+        self._accumulated_output_tokens.extend(tokens)
+
+    async def get_input_stream(self) -> AsyncGenerator[StreamingInput, None]:
+        while True:
+            audio_arrays: list[np.ndarray] = (
+                [self._leftover] if self._leftover is not None else []
+            )
+            total_samples = 0
+            if self._leftover is not None:
+                total_samples = len(self._leftover)
+            need = self._frame_size - total_samples
+            if self._leftover is None:
+                need -= self._look_back_samples
+
+            while need > 0:
+                arr = await self._audio_queue.get()
+                if arr is None:
+                    await self._wait_previous_segment_output()
+                    full = np.concatenate(audio_arrays) if audio_arrays else None
+                    if self._leftover is None and full is not None:
+                        full = np.concatenate([
+                            np.zeros(
+                                self._look_back_samples,
+                                dtype=np.float32,
+                            ),
+                            full,
+                        ])
+                    if full is not None and len(full) > 0:
+                        context = self._accumulated_output_tokens[
+                            -MAX_CONTEXT_TOKENS:
+                        ]
+                        prompt_token_ids = list(
+                            self._prompt_token_ids_before_context
+                        )
+                        prompt_token_ids.extend(context)
+                        prompt_token_ids.extend(
+                            self._prompt_token_ids_after_context
+                        )
+                        yield StreamingInput(
+                            TokensPrompt(
+                                prompt_token_ids=prompt_token_ids,
+                                multi_modal_data={"audio": full},
+                            )
+                        )
+                    return
+                audio_arrays.append(arr)
+                total_samples += len(arr)
+                need = self._frame_size - total_samples
+                if self._leftover is None:
+                    need -= self._look_back_samples
+
+            await self._wait_previous_segment_output()
+
+            if self._leftover is not None:
+                concatenated = np.concatenate(audio_arrays)
+            else:
+                pad = np.zeros(
+                    self._look_back_samples,
+                    dtype=np.float32,
+                )
+                concatenated = np.concatenate([pad] + audio_arrays)
+
+            frame = concatenated[: self._frame_size].copy()
+            self._leftover = concatenated[self._stride :].copy()
+
+            self._last_yield_accumulated_len = len(self._accumulated_output_tokens)
+            context = self._accumulated_output_tokens[-MAX_CONTEXT_TOKENS:]
+            prompt_token_ids = list(self._prompt_token_ids_before_context)
+            prompt_token_ids.extend(context)
+            prompt_token_ids.extend(self._prompt_token_ids_after_context)
+            yield StreamingInput(
+                TokensPrompt(
+                    prompt_token_ids=prompt_token_ids,
+                    multi_modal_data={"audio": frame},
+                )
+            )
 
 
 class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
@@ -114,6 +223,8 @@ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
         cache: BaseMultiModalProcessorCache | None = None,
     ) -> None:
         super().__init__(info, dummy_inputs, cache=None)
+        tokenizer = self.info.get_tokenizer()
+        self._audio_pad_id = tokenizer.convert_tokens_to_ids("<|audio_pad|>")
 
     def _maybe_apply_prompt_updates(
         self,
@@ -144,13 +255,11 @@ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
         else:
             audio_len = 0
 
-        # Get audio_pad token ID and expand placeholder in prompt_ids
-        # so that MRoPE position computation matches seq_len.
-        tokenizer = self.info.get_tokenizer()
-        audio_pad_id = tokenizer.convert_tokens_to_ids("<|audio_pad|>")
+        # Expand placeholder to audio_len pads so MRoPE seq_len matches.
+        audio_pad_id = self._audio_pad_id
 
         # Find the audio_pad token position and expand it to audio_len tokens
-        expanded_ids = list[int]()
+        expanded_ids: list[int] = []
         pad_start_idx = -1
         for i, tid in enumerate(prompt_ids):
             if tid == audio_pad_id and pad_start_idx == -1:
@@ -183,7 +292,8 @@ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
 )
 @support_torch_compile
 class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealtime):
-    realtime_max_tokens = 64
+    # Allow enough tokens per ~3s chunk so sentences are not cut off mid-way.
+    realtime_max_tokens = 256
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
@@ -200,33 +310,52 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
         sampling_rate = feature_extractor.sampling_rate
         tokenizer = cached_tokenizer_from_config(model_config)
 
+        audio_placeholder = cls.get_placeholder_str("audio", 0)
+        # Put [Previous transcript:] + context before current audio to use it
+        # as prefix; order: user → previous transcript → current audio → assistant.
+        prompt_before_context = (
+            "<|im_start|>user\n[Previous transcript:] "
+        )
+        prompt_after_context = (
+            f"\n{audio_placeholder}\n<|im_end|>\n<|im_start|>assistant\n"
+            f"language {DEFAULT_REALTIME_LANGUAGE_NAME}{_ASR_TEXT_TAG}"
+        )
+        prompt_token_ids_before = tokenizer.encode(prompt_before_context)
+        prompt_token_ids_after = tokenizer.encode(prompt_after_context)
+
         buffer = Qwen3ASRRealtimeBuffer(
             sampling_rate=sampling_rate,
             segment_duration_s=SEGMENT_DURATION_S,
+            look_back_s=DEFAULT_LOOK_BACK_S,
+            look_ahead_s=DEFAULT_LOOK_AHEAD_S,
+            prompt_token_ids_before_context=prompt_token_ids_before,
+            prompt_token_ids_after_context=prompt_token_ids_after,
+            token_output_queue=input_stream,
         )
 
-        audio_placeholder = cls.get_placeholder_str("audio", 0)
-        prompt_template = (
-            f"<|im_start|>user\n{audio_placeholder}<|im_end|>\n<|im_start|>assistant\n"
-        )
+        async def feed_audio() -> None:
+            async for audio_chunk in audio_stream:
+                await buffer.append_audio(audio_chunk)
+            await buffer.append_audio(None)
 
-        prompt_token_ids = tokenizer.encode(prompt_template)
-
-        async for audio_chunk in audio_stream:
-            buffer.write_audio(audio_chunk)
-
-            while (segment := buffer.read_audio()) is not None:
-                yield TokensPrompt(
-                    prompt_token_ids=prompt_token_ids,
-                    multi_modal_data={"audio": segment},
+        async def feed_tokens() -> None:
+            while True:
+                # DELTA mode: each put is the new token(s) only, not cumulative.
+                delta_tokens = await asyncio.wait_for(
+                    input_stream.get(),
+                    timeout=VLLM_ENGINE_ITERATION_TIMEOUT_S,
                 )
+                await buffer.append_tokens(delta_tokens)
 
-        remaining = buffer.flush()
-        if remaining is not None and len(remaining) > 0:
-            yield TokensPrompt(
-                prompt_token_ids=prompt_token_ids,
-                multi_modal_data={"audio": remaining},
-            )
+        audio_task = asyncio.create_task(feed_audio())
+        token_task = asyncio.create_task(feed_tokens())
+
+        try:
+            async for streaming_input in buffer.get_input_stream():
+                yield streaming_input.prompt
+        finally:
+            audio_task.cancel()
+            token_task.cancel()
 
     @classmethod
     def get_speech_to_text_config(
