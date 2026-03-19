@@ -1,5 +1,5 @@
 FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.14.0-maca.ai3.5.3.102-torch2.8-py312-ubuntu22.04-amd64
-
+# FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.14.0-maca.ai3.5.3.102-torch2.8-py312-kylinv11-amd64
 
 ARG VLLM_PATH="/opt/conda/lib/python3.12/site-packages/vllm"
 
