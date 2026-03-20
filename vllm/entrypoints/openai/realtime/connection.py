@@ -294,6 +294,7 @@ class RealtimeConnection:
                                         accumulated_token_ids,
                                         segment_boundary_buffer,
                                         boundary_token_ids,
+                                        tokenizer=tokenizer,
                                     )
                                 )
                                 accumulated_token_ids.extend(
@@ -350,6 +351,7 @@ class RealtimeConnection:
                             accumulated_token_ids,
                             segment_boundary_buffer,
                             boundary_token_ids,
+                            tokenizer=tokenizer,
                         )
                     )
                     accumulated_token_ids.extend(deduped)
