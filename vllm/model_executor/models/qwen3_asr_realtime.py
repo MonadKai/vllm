@@ -61,14 +61,51 @@ DEFAULT_REALTIME_LANGUAGE_NAME = "Chinese"
 # boundaries to improve accuracy (like voxtral_realtime).
 SEGMENT_DURATION_S = 5.0
 
-# Overlap at segment boundaries (like voxtral_realtime); larger overlap
-# reduces 漏字 and 边界重复 at the cost of a bit more latency.
+# Overlap at segment boundaries (like voxtral_realtime); 
+# larger overlap help improve accuracy at the cost of a bit more latency.
 DEFAULT_LOOK_BACK_S = 0.5
 DEFAULT_LOOK_AHEAD_S = 0.5
 
-# Max tokens of previous transcript as context; larger window helps avoid
-# dropping words at boundaries (漏字) and reduces boundary repetition.
+# Max tokens of previous transcript as context; 
+# larger window helps avoid dropping words at boundaries and reduces boundary repetition.
 MAX_CONTEXT_TOKENS = 32
+
+
+def deduplicate_segment_boundary_tokens(
+    accumulated_token_ids: list[int],
+    new_token_ids: list[int],
+    newline_token_ids: set[int] | frozenset[int],
+) -> list[int]:
+    """Remove overlapping token prefix from new_token_ids that duplicates suffix.
+
+    Segment overlap (look_back/look_ahead) causes the model to emit duplicate
+    tokens at
+    boundaries. This finds the longest suffix of accumulated that matches a prefix of
+    new_token_ids (after skipping leading newline tokens) and returns only the
+    non-overlapping part of new_token_ids to append. Leading newlines in new_token_ids
+    are preserved so segment-boundary line breaks are kept.
+    """
+    if not new_token_ids:
+        return []
+    newline_ids = set(newline_token_ids)
+    leading_newline_count = 0
+    for token_id in new_token_ids:
+        if token_id in newline_ids:
+            leading_newline_count += 1
+        else:
+            break
+    content_start = leading_newline_count
+    stripped = new_token_ids[content_start:]
+    if not stripped:
+        return new_token_ids
+    max_overlap = 0
+    for length in range(1, min(len(accumulated_token_ids), len(stripped)) + 1):
+        if accumulated_token_ids[-length:] == stripped[:length]:
+            max_overlap = length
+    return (
+        new_token_ids[:content_start]
+        + new_token_ids[content_start + max_overlap :]
+    )
 
 
 class Qwen3ASRRealtimeBuffer:

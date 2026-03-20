@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import json
+import re
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from uuid import uuid4
@@ -25,8 +26,11 @@ from vllm.entrypoints.openai.realtime.protocol import (
 from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.tokenizers import cached_tokenizer_from_config
 
 logger = init_logger(__name__)
+
+_MULTI_NEWLINE_PATTERN = re.compile(r"\n{2,}")
 
 
 class RealtimeConnection:
@@ -207,6 +211,25 @@ class RealtimeConnection:
         prompt_token_ids_len: int = 0
         completion_tokens_len: int = 0
 
+        use_token_dedup = False
+        accumulated_token_ids: list[int] = []
+        tokenizer = None
+        newline_token_ids: set[int] = set()
+        prev_decoded_len = 0
+        try:
+            from vllm.model_executor.models.qwen3_asr_realtime import (
+                Qwen3ASRRealtimeGeneration,
+                deduplicate_segment_boundary_tokens,
+            )
+            if type(self.serving.model_cls) is Qwen3ASRRealtimeGeneration:
+                use_token_dedup = True
+                tokenizer = cached_tokenizer_from_config(
+                    self.serving.model_config
+                )
+                newline_token_ids = set(tokenizer.encode("\n"))
+        except ImportError:
+            pass
+
         try:
             # Create sampling params
             from vllm.sampling_params import RequestOutputKind, SamplingParams
@@ -233,18 +256,36 @@ class RealtimeConnection:
                     if not prompt_token_ids_len and output.prompt_token_ids:
                         prompt_token_ids_len = len(output.prompt_token_ids)
 
-                    delta = output.outputs[0].text
-                    full_text += delta
+                    token_ids = list(output.outputs[0].token_ids)
+                    if use_token_dedup and tokenizer is not None:
+                        to_append = deduplicate_segment_boundary_tokens(
+                            accumulated_token_ids,
+                            token_ids,
+                            newline_token_ids,
+                        )
+                        accumulated_token_ids.extend(to_append)
+                        input_stream.put_nowait(to_append)
+                        full_text = tokenizer.decode(
+                            accumulated_token_ids,
+                            skip_special_tokens=True,
+                        )
+                        delta = full_text[prev_decoded_len:]
+                        prev_decoded_len = len(full_text)
+                        completion_tokens_len += len(to_append)
+                    else:
+                        delta = output.outputs[0].text
+                        full_text += delta
+                        input_stream.put_nowait(token_ids)
+                        completion_tokens_len += len(token_ids)
 
-                    # append output to input
-                    input_stream.put_nowait(list(output.outputs[0].token_ids))
                     await self.send(TranscriptionDelta(delta=delta))
-
-                    completion_tokens_len += len(output.outputs[0].token_ids)
 
                 if not self._is_connected:
                     # finish because websocket connection was killed
                     break
+
+            if use_token_dedup and full_text:
+                full_text = _MULTI_NEWLINE_PATTERN.sub("\n", full_text).strip()
 
             usage = UsageInfo(
                 prompt_tokens=prompt_token_ids_len,
