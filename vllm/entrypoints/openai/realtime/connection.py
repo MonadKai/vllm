@@ -26,11 +26,44 @@ from vllm.entrypoints.openai.realtime.protocol import (
 from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
-from vllm.tokenizers import cached_tokenizer_from_config
 
 logger = init_logger(__name__)
 
 _MULTI_NEWLINE_PATTERN = re.compile(r"\n{2,}")
+
+# With RequestOutputKind.DELTA, each chunk may be only one token; boundary
+# duplicates may span many chunks, so token-wise dedup fails.
+# Buffer decoded text until overlap with full_text can be resolved or cap.
+_REALTIME_TEXT_MERGE_MAX_PENDING_CHARS = 48
+
+
+def _longest_suffix_prefix_char_overlap(
+    accumulated_text: str, pending_text: str
+) -> int:
+    """Return max L such that accumulated_text.endswith(pending_text[:L])."""
+    max_l = min(len(accumulated_text), len(pending_text))
+    for length in range(max_l, 0, -1):
+        if accumulated_text.endswith(pending_text[:length]):
+            return length
+    return 0
+
+
+def _merge_streaming_transcript_boundary(
+    full_text: str, pending_text: str
+) -> tuple[str, str]:
+    """Drop duplicate prefix of pending_text that repeats suffix of full_text."""
+    while True:
+        if not pending_text:
+            return full_text, pending_text
+        overlap_len = _longest_suffix_prefix_char_overlap(full_text, pending_text)
+        pending_len = len(pending_text)
+        if overlap_len == pending_len and pending_len > 0:
+            return full_text, ""
+        if overlap_len > 0:
+            return full_text + pending_text[overlap_len:], ""
+        if pending_len >= _REALTIME_TEXT_MERGE_MAX_PENDING_CHARS:
+            return full_text + pending_text, ""
+        return full_text, pending_text
 
 
 class RealtimeConnection:
@@ -211,23 +244,15 @@ class RealtimeConnection:
         prompt_token_ids_len: int = 0
         completion_tokens_len: int = 0
 
-        use_token_dedup = False
-        accumulated_token_ids: list[int] = []
-        tokenizer = None
-        newline_token_ids: set[int] = set()
-        prev_decoded_len = 0
+        use_streaming_transcript_merge = False
+        pending_transcript_text = ""
         try:
             from vllm.model_executor.models.qwen3_asr_realtime import (
                 Qwen3ASRRealtimeGeneration,
-                deduplicate_segment_boundary_tokens,
             )
             # model_cls is the class; type(model_cls) is ``type``, not the model.
             if self.serving.model_cls is Qwen3ASRRealtimeGeneration:
-                use_token_dedup = True
-                tokenizer = cached_tokenizer_from_config(
-                    self.serving.model_config
-                )
-                newline_token_ids = set(tokenizer.encode("\n"))
+                use_streaming_transcript_merge = True
         except ImportError:
             pass
 
@@ -258,35 +283,45 @@ class RealtimeConnection:
                         prompt_token_ids_len = len(output.prompt_token_ids)
 
                     token_ids = list(output.outputs[0].token_ids)
-                    if use_token_dedup and tokenizer is not None:
-                        to_append = deduplicate_segment_boundary_tokens(
-                            accumulated_token_ids,
-                            token_ids,
-                            newline_token_ids,
+                    len_before = len(full_text)
+                    if use_streaming_transcript_merge:
+                        # Raw tokens keep buffer timing/context in sync with engine.
+                        input_stream.put_nowait(token_ids)
+                        pending_transcript_text += output.outputs[0].text
+                        full_text, pending_transcript_text = (
+                            _merge_streaming_transcript_boundary(
+                                full_text, pending_transcript_text
+                            )
                         )
-                        accumulated_token_ids.extend(to_append)
-                        input_stream.put_nowait(to_append)
-                        full_text = tokenizer.decode(
-                            accumulated_token_ids,
-                            skip_special_tokens=True,
-                        )
-                        delta = full_text[prev_decoded_len:]
-                        prev_decoded_len = len(full_text)
-                        completion_tokens_len += len(to_append)
+                        delta = full_text[len_before:]
+                        completion_tokens_len += len(token_ids)
                     else:
                         delta = output.outputs[0].text
                         full_text += delta
                         input_stream.put_nowait(token_ids)
                         completion_tokens_len += len(token_ids)
 
-                    await self.send(TranscriptionDelta(delta=delta))
+                    if delta:
+                        await self.send(TranscriptionDelta(delta=delta))
 
                 if not self._is_connected:
                     # finish because websocket connection was killed
                     break
 
-            if use_token_dedup and full_text:
-                full_text = _MULTI_NEWLINE_PATTERN.sub("\n", full_text).strip()
+            if use_streaming_transcript_merge:
+                if pending_transcript_text:
+                    overlap_len = _longest_suffix_prefix_char_overlap(
+                        full_text, pending_transcript_text
+                    )
+                    plen = len(pending_transcript_text)
+                    if overlap_len < plen:
+                        if overlap_len > 0:
+                            full_text += pending_transcript_text[overlap_len:]
+                        else:
+                            full_text += pending_transcript_text
+                if full_text:
+                    full_text = _MULTI_NEWLINE_PATTERN.sub("\n", full_text).strip()
+                    full_text = full_text.replace("\n", "")
 
             usage = UsageInfo(
                 prompt_tokens=prompt_token_ids_len,
