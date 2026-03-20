@@ -66,46 +66,125 @@ SEGMENT_DURATION_S = 5.0
 DEFAULT_LOOK_BACK_S = 0.5
 DEFAULT_LOOK_AHEAD_S = 0.5
 
-# Max tokens of previous transcript as context; 
-# larger window helps avoid dropping words at boundaries and reduces boundary repetition.
+# Max tokens of previous transcript as context; larger window reduces boundary
+# repetition and helps avoid dropping words at boundaries.
 MAX_CONTEXT_TOKENS = 32
+
+_DEDUP_PUNCT_CHARS = frozenset(
+    "。，！？；.!?;、：:\n \t"
+    "\u201c\u201d\u2018\u2019"
+    "「」【】（）()《》"
+)
+
+
+def _text_based_overlap_tokens(
+    acc_token_ids: list[int],
+    new_token_ids: list[int],
+    tokenizer,
+    punct_chars: frozenset[str],
+    max_acc_tokens: int = 50,
+    max_new_tokens: int = 30,
+) -> int:
+    """Find how many leading tokens of *new_token_ids* textually repeat
+    the tail of *acc_token_ids*, ignoring characters in *punct_chars*.
+
+    Returns the number of tokens to skip from the front of *new_token_ids*.
+    """
+    if not acc_token_ids or not new_token_ids:
+        return 0
+
+    acc_text_raw = tokenizer.decode(
+        acc_token_ids[-max_acc_tokens:], skip_special_tokens=True,
+    )
+    acc_clean = "".join(ch for ch in acc_text_raw if ch not in punct_chars)
+
+    check_n = min(len(new_token_ids), max_new_tokens)
+    new_text_raw = tokenizer.decode(
+        new_token_ids[:check_n], skip_special_tokens=True,
+    )
+    new_clean = "".join(ch for ch in new_text_raw if ch not in punct_chars)
+
+    if not acc_clean or not new_clean:
+        return 0
+
+    max_k = min(len(acc_clean), len(new_clean))
+    overlap_chars = 0
+    for k in range(1, max_k + 1):
+        if acc_clean[-k:] == new_clean[:k]:
+            overlap_chars = k
+
+    if overlap_chars == 0:
+        return 0
+
+    for n in range(1, check_n + 1):
+        prefix_raw = tokenizer.decode(
+            new_token_ids[:n], skip_special_tokens=True,
+        )
+        prefix_clean = "".join(
+            ch for ch in prefix_raw if ch not in punct_chars
+        )
+        if len(prefix_clean) >= overlap_chars:
+            return n
+
+    return 0
 
 
 def deduplicate_segment_boundary_tokens(
     accumulated_token_ids: list[int],
-    new_token_ids: list[int],
-    newline_token_ids: set[int] | frozenset[int],
+    new_segment_token_ids: list[int],
+    boundary_token_ids: set[int] | frozenset[int],
+    tokenizer=None,
 ) -> list[int]:
-    """Remove overlapping token prefix from new_token_ids that duplicates suffix.
+    """Remove overlapping prefix of new segment that duplicates
+    accumulated suffix.
 
-    Segment overlap (look_back/look_ahead) causes the model to emit duplicate
-    tokens at
-    boundaries. This finds the longest suffix of accumulated that matches a prefix of
-    new_token_ids (after skipping leading newline tokens) and returns only the
-    non-overlapping part of new_token_ids to append. Leading newlines in new_token_ids
-    are preserved so segment-boundary line breaks are kept.
+    Uses token-ID suffix-prefix matching first, then (when *tokenizer*
+    is provided) text-based matching that ignores punctuation to catch
+    overlaps where the same text is tokenised differently across
+    segment boundaries.  The larger of the two overlaps is used.
+
+    Called once per segment boundary (NOT per DELTA chunk) with
+    the *complete* token list of the new segment's buffered head.
     """
-    if not new_token_ids:
+    if not new_segment_token_ids:
         return []
-    newline_ids = set(newline_token_ids)
-    leading_newline_count = 0
-    for token_id in new_token_ids:
-        if token_id in newline_ids:
-            leading_newline_count += 1
+    bids = set(boundary_token_ids)
+    if not accumulated_token_ids:
+        start = 0
+        for tid in new_segment_token_ids:
+            if tid in bids:
+                start += 1
+            else:
+                break
+        return new_segment_token_ids[start:]
+    content_start = 0
+    for tid in new_segment_token_ids:
+        if tid in bids:
+            content_start += 1
         else:
             break
-    content_start = leading_newline_count
-    stripped = new_token_ids[content_start:]
-    if not stripped:
-        return new_token_ids
+    stripped_new = new_segment_token_ids[content_start:]
+    if not stripped_new:
+        return []
+    acc_end = len(accumulated_token_ids)
+    while acc_end > 0 and accumulated_token_ids[acc_end - 1] in bids:
+        acc_end -= 1
+    if acc_end == 0:
+        return stripped_new
+    acc_for_match = accumulated_token_ids[:acc_end]
     max_overlap = 0
-    for length in range(1, min(len(accumulated_token_ids), len(stripped)) + 1):
-        if accumulated_token_ids[-length:] == stripped[:length]:
+    max_check = min(len(acc_for_match), len(stripped_new))
+    for length in range(1, max_check + 1):
+        if acc_for_match[-length:] == stripped_new[:length]:
             max_overlap = length
-    return (
-        new_token_ids[:content_start]
-        + new_token_ids[content_start + max_overlap :]
-    )
+
+    if tokenizer is not None:
+        text_overlap = _text_based_overlap_tokens(
+            acc_for_match, stripped_new, tokenizer, _DEDUP_PUNCT_CHARS,
+        )
+        max_overlap = max(max_overlap, text_overlap)
+
+    return stripped_new[max_overlap:]
 
 
 class Qwen3ASRRealtimeBuffer:
