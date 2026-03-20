@@ -66,46 +66,60 @@ SEGMENT_DURATION_S = 5.0
 DEFAULT_LOOK_BACK_S = 0.5
 DEFAULT_LOOK_AHEAD_S = 0.5
 
-# Max tokens of previous transcript as context; 
-# larger window helps avoid dropping words at boundaries and reduces boundary repetition.
+# Max tokens of previous transcript as context; larger window reduces boundary
+# repetition and helps avoid dropping words at boundaries.
 MAX_CONTEXT_TOKENS = 32
 
 
 def deduplicate_segment_boundary_tokens(
     accumulated_token_ids: list[int],
-    new_token_ids: list[int],
-    newline_token_ids: set[int] | frozenset[int],
+    new_segment_token_ids: list[int],
+    boundary_token_ids: set[int] | frozenset[int],
 ) -> list[int]:
-    """Remove overlapping token prefix from new_token_ids that duplicates suffix.
+    """Remove overlapping prefix of new segment that duplicates
+    accumulated suffix.
 
-    Segment overlap (look_back/look_ahead) causes the model to emit duplicate
-    tokens at
-    boundaries. This finds the longest suffix of accumulated that matches a prefix of
-    new_token_ids (after skipping leading newline tokens) and returns only the
-    non-overlapping part of new_token_ids to append. Leading newlines in new_token_ids
-    are preserved so segment-boundary line breaks are kept.
+    Called once per segment boundary (NOT per DELTA chunk) with
+    the *complete* token list of the new segment's buffered head.
+
+    Boundary tokens (newlines AND punctuation like 。！？) are
+    stripped from both ends before matching so that trailing "。\\n"
+    on segment N doesn't block the suffix-prefix alignment with
+    "\\n最近…" on segment N+1.  Leading boundary tokens in the
+    new segment are dropped (they are segmentation artifacts).
     """
-    if not new_token_ids:
+    if not new_segment_token_ids:
         return []
-    newline_ids = set(newline_token_ids)
-    leading_newline_count = 0
-    for token_id in new_token_ids:
-        if token_id in newline_ids:
-            leading_newline_count += 1
+    bids = set(boundary_token_ids)
+    if not accumulated_token_ids:
+        start = 0
+        for tid in new_segment_token_ids:
+            if tid in bids:
+                start += 1
+            else:
+                break
+        return new_segment_token_ids[start:]
+    content_start = 0
+    for tid in new_segment_token_ids:
+        if tid in bids:
+            content_start += 1
         else:
             break
-    content_start = leading_newline_count
-    stripped = new_token_ids[content_start:]
-    if not stripped:
-        return new_token_ids
+    stripped_new = new_segment_token_ids[content_start:]
+    if not stripped_new:
+        return []
+    acc_end = len(accumulated_token_ids)
+    while acc_end > 0 and accumulated_token_ids[acc_end - 1] in bids:
+        acc_end -= 1
+    if acc_end == 0:
+        return stripped_new
+    acc_for_match = accumulated_token_ids[:acc_end]
     max_overlap = 0
-    for length in range(1, min(len(accumulated_token_ids), len(stripped)) + 1):
-        if accumulated_token_ids[-length:] == stripped[:length]:
+    max_check = min(len(acc_for_match), len(stripped_new))
+    for length in range(1, max_check + 1):
+        if acc_for_match[-length:] == stripped_new[:length]:
             max_overlap = length
-    return (
-        new_token_ids[:content_start]
-        + new_token_ids[content_start + max_overlap :]
-    )
+    return stripped_new[max_overlap:]
 
 
 class Qwen3ASRRealtimeBuffer:
