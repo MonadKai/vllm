@@ -61,13 +61,13 @@ DEFAULT_REALTIME_LANGUAGE_NAME = "Chinese"
 # boundaries to improve accuracy (like voxtral_realtime).
 SEGMENT_DURATION_S = 5.0
 
-# Overlap at segment boundaries (like voxtral_realtime); larger overlap
-# reduces 漏字 and 边界重复 at the cost of a bit more latency.
+# Overlap at segment boundaries (like voxtral_realtime); 
+# larger overlap help improve accuracy at the cost of a bit more latency.
 DEFAULT_LOOK_BACK_S = 0.5
 DEFAULT_LOOK_AHEAD_S = 0.5
 
-# Max tokens of previous transcript as context; larger window helps avoid
-# dropping words at boundaries (漏字) and reduces boundary repetition.
+# Max tokens of previous transcript as context; 
+# larger window helps avoid dropping words at boundaries and reduces boundary repetition.
 MAX_CONTEXT_TOKENS = 32
 
 
