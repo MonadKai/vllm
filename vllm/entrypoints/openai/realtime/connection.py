@@ -221,7 +221,8 @@ class RealtimeConnection:
                 Qwen3ASRRealtimeGeneration,
                 deduplicate_segment_boundary_tokens,
             )
-            if type(self.serving.model_cls) is Qwen3ASRRealtimeGeneration:
+            # model_cls is the class; type(model_cls) is ``type``, not the model.
+            if self.serving.model_cls is Qwen3ASRRealtimeGeneration:
                 use_token_dedup = True
                 tokenizer = cached_tokenizer_from_config(
                     self.serving.model_config

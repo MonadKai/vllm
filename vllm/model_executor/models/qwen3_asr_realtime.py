@@ -66,8 +66,8 @@ SEGMENT_DURATION_S = 5.0
 DEFAULT_LOOK_BACK_S = 0.5
 DEFAULT_LOOK_AHEAD_S = 0.5
 
-# Max tokens of previous transcript as context; 
-# larger window helps avoid dropping words at boundaries and reduces boundary repetition.
+# Max tokens of previous transcript as context; larger window reduces boundary
+# repetition and helps avoid dropping words at boundaries.
 MAX_CONTEXT_TOKENS = 32
 
 
@@ -98,9 +98,17 @@ def deduplicate_segment_boundary_tokens(
     stripped = new_token_ids[content_start:]
     if not stripped:
         return new_token_ids
+    # Ignore trailing newline tokens on accumulated when matching: segment N often
+    # ends with "。\\n" and segment N+1 starts with "\\n最近…"; suffix "最近…" must
+    # still align with stripped prefix.
+    acc_len = len(accumulated_token_ids)
+    acc_end = acc_len
+    while acc_end > 0 and accumulated_token_ids[acc_end - 1] in newline_ids:
+        acc_end -= 1
+    accumulated_for_match = accumulated_token_ids[:acc_end]
     max_overlap = 0
-    for length in range(1, min(len(accumulated_token_ids), len(stripped)) + 1):
-        if accumulated_token_ids[-length:] == stripped[:length]:
+    for length in range(1, min(len(accumulated_for_match), len(stripped)) + 1):
+        if accumulated_for_match[-length:] == stripped[:length]:
             max_overlap = length
     return (
         new_token_ids[:content_start]
