@@ -4,7 +4,6 @@
 import asyncio
 import base64
 import json
-import re
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from uuid import uuid4
@@ -26,44 +25,15 @@ from vllm.entrypoints.openai.realtime.protocol import (
 from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.tokenizers import cached_tokenizer_from_config
 
 logger = init_logger(__name__)
 
-_MULTI_NEWLINE_PATTERN = re.compile(r"\n{2,}")
-
-# With RequestOutputKind.DELTA, each chunk may be only one token; boundary
-# duplicates may span many chunks, so token-wise dedup fails.
-# Buffer decoded text until overlap with full_text can be resolved or cap.
-_REALTIME_TEXT_MERGE_MAX_PENDING_CHARS = 48
-
-
-def _longest_suffix_prefix_char_overlap(
-    accumulated_text: str, pending_text: str
-) -> int:
-    """Return max L such that accumulated_text.endswith(pending_text[:L])."""
-    max_l = min(len(accumulated_text), len(pending_text))
-    for length in range(max_l, 0, -1):
-        if accumulated_text.endswith(pending_text[:length]):
-            return length
-    return 0
-
-
-def _merge_streaming_transcript_boundary(
-    full_text: str, pending_text: str
-) -> tuple[str, str]:
-    """Drop duplicate prefix of pending_text that repeats suffix of full_text."""
-    while True:
-        if not pending_text:
-            return full_text, pending_text
-        overlap_len = _longest_suffix_prefix_char_overlap(full_text, pending_text)
-        pending_len = len(pending_text)
-        if overlap_len == pending_len and pending_len > 0:
-            return full_text, ""
-        if overlap_len > 0:
-            return full_text + pending_text[overlap_len:], ""
-        if pending_len >= _REALTIME_TEXT_MERGE_MAX_PENDING_CHARS:
-            return full_text + pending_text, ""
-        return full_text, pending_text
+# At each segment boundary, buffer this many tokens from the new segment
+# before running dedup.  With 0.5s look_back + 0.5s look_ahead = 1s
+# overlap, Chinese speech at ~4-8 chars/s gives ~4-10 overlapping tokens;
+# 20 provides ample margin.
+_SEGMENT_DEDUP_BUFFER_SIZE = 20
 
 
 class RealtimeConnection:
@@ -244,21 +214,36 @@ class RealtimeConnection:
         prompt_token_ids_len: int = 0
         completion_tokens_len: int = 0
 
-        use_streaming_transcript_merge = False
-        pending_transcript_text = ""
+        use_token_dedup = False
+        accumulated_token_ids: list[int] = []
+        tokenizer = None
+        boundary_token_ids: set[int] = set()
+        prev_decoded_len = 0
+        segment_boundary_buffer: list[int] = []
+        in_dedup_mode = False
+
         try:
             from vllm.model_executor.models.qwen3_asr_realtime import (
                 Qwen3ASRRealtimeGeneration,
+                deduplicate_segment_boundary_tokens,
             )
-            # model_cls is the class; type(model_cls) is ``type``, not the model.
             if self.serving.model_cls is Qwen3ASRRealtimeGeneration:
-                use_streaming_transcript_merge = True
+                use_token_dedup = True
+                tokenizer = cached_tokenizer_from_config(
+                    self.serving.model_config
+                )
+                for ch in "\n。，！？；.!?;":
+                    boundary_token_ids.update(
+                        tokenizer.encode(ch)
+                    )
         except ImportError:
             pass
 
         try:
-            # Create sampling params
-            from vllm.sampling_params import RequestOutputKind, SamplingParams
+            from vllm.sampling_params import (
+                RequestOutputKind,
+                SamplingParams,
+            )
 
             sampling_params = SamplingParams.from_optional(
                 temperature=0.0,
@@ -267,72 +252,126 @@ class RealtimeConnection:
                 skip_clone=True,
             )
 
-            # Pass the streaming input generator to the engine
-            # The engine will consume audio chunks as they arrive and
-            # stream back transcription results incrementally
             result_gen = self.serving.engine_client.generate(
                 prompt=streaming_input_gen,
                 sampling_params=sampling_params,
                 request_id=request_id,
             )
 
-            # Stream results back to client as they're generated
             async for output in result_gen:
                 if output.outputs and len(output.outputs) > 0:
-                    if not prompt_token_ids_len and output.prompt_token_ids:
-                        prompt_token_ids_len = len(output.prompt_token_ids)
-
-                    token_ids = list(output.outputs[0].token_ids)
-                    len_before = len(full_text)
-                    if use_streaming_transcript_merge:
-                        # Raw tokens keep buffer timing/context in sync with engine.
-                        input_stream.put_nowait(token_ids)
-                        pending_transcript_text += output.outputs[0].text
-                        full_text, pending_transcript_text = (
-                            _merge_streaming_transcript_boundary(
-                                full_text, pending_transcript_text
-                            )
+                    if (
+                        not prompt_token_ids_len
+                        and output.prompt_token_ids
+                    ):
+                        prompt_token_ids_len = len(
+                            output.prompt_token_ids
                         )
-                        delta = full_text[len_before:]
-                        completion_tokens_len += len(token_ids)
+
+                    token_ids = list(
+                        output.outputs[0].token_ids
+                    )
+                    finish_reason = (
+                        output.outputs[0].finish_reason
+                    )
+
+                    input_stream.put_nowait(token_ids)
+                    completion_tokens_len += len(token_ids)
+
+                    if use_token_dedup and tokenizer is not None:
+                        if in_dedup_mode:
+                            segment_boundary_buffer.extend(
+                                token_ids
+                            )
+                            should_flush = (
+                                len(segment_boundary_buffer)
+                                >= _SEGMENT_DEDUP_BUFFER_SIZE
+                                or finish_reason is not None
+                            )
+                            if should_flush:
+                                deduped = (
+                                    deduplicate_segment_boundary_tokens(
+                                        accumulated_token_ids,
+                                        segment_boundary_buffer,
+                                        boundary_token_ids,
+                                    )
+                                )
+                                accumulated_token_ids.extend(
+                                    deduped
+                                )
+                                in_dedup_mode = False
+                                full_text = tokenizer.decode(
+                                    accumulated_token_ids,
+                                    skip_special_tokens=True,
+                                )
+                                delta = full_text[
+                                    prev_decoded_len:
+                                ]
+                                prev_decoded_len = len(full_text)
+                                if delta:
+                                    await self.send(
+                                        TranscriptionDelta(
+                                            delta=delta
+                                        )
+                                    )
+                        else:
+                            accumulated_token_ids.extend(token_ids)
+                            full_text = tokenizer.decode(
+                                accumulated_token_ids,
+                                skip_special_tokens=True,
+                            )
+                            delta = full_text[prev_decoded_len:]
+                            prev_decoded_len = len(full_text)
+                            if delta:
+                                await self.send(
+                                    TranscriptionDelta(
+                                        delta=delta
+                                    )
+                                )
+
+                        if finish_reason is not None:
+                            in_dedup_mode = True
+                            segment_boundary_buffer = []
                     else:
                         delta = output.outputs[0].text
                         full_text += delta
-                        input_stream.put_nowait(token_ids)
-                        completion_tokens_len += len(token_ids)
-
-                    if delta:
-                        await self.send(TranscriptionDelta(delta=delta))
+                        if delta:
+                            await self.send(
+                                TranscriptionDelta(delta=delta)
+                            )
 
                 if not self._is_connected:
-                    # finish because websocket connection was killed
                     break
 
-            if use_streaming_transcript_merge:
-                if pending_transcript_text:
-                    overlap_len = _longest_suffix_prefix_char_overlap(
-                        full_text, pending_transcript_text
+            if use_token_dedup:
+                if in_dedup_mode and segment_boundary_buffer:
+                    deduped = (
+                        deduplicate_segment_boundary_tokens(
+                            accumulated_token_ids,
+                            segment_boundary_buffer,
+                            boundary_token_ids,
+                        )
                     )
-                    plen = len(pending_transcript_text)
-                    if overlap_len < plen:
-                        if overlap_len > 0:
-                            full_text += pending_transcript_text[overlap_len:]
-                        else:
-                            full_text += pending_transcript_text
-                if full_text:
-                    full_text = _MULTI_NEWLINE_PATTERN.sub("\n", full_text).strip()
+                    accumulated_token_ids.extend(deduped)
+                if accumulated_token_ids:
+                    full_text = tokenizer.decode(
+                        accumulated_token_ids,
+                        skip_special_tokens=True,
+                    )
                     full_text = full_text.replace("\n", "")
 
             usage = UsageInfo(
                 prompt_tokens=prompt_token_ids_len,
                 completion_tokens=completion_tokens_len,
-                total_tokens=prompt_token_ids_len + completion_tokens_len,
+                total_tokens=(
+                    prompt_token_ids_len + completion_tokens_len
+                ),
             )
 
-            # Send final completion event
-            await self.send(TranscriptionDone(text=full_text, usage=usage))
+            await self.send(
+                TranscriptionDone(text=full_text, usage=usage)
+            )
 
-            # Clear queue for next utterance
             while not self.audio_queue.empty():
                 self.audio_queue.get_nowait()
 
