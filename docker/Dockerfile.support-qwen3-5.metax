@@ -1,5 +1,11 @@
-# use public vllm-metax image
-FROM pub-registry1.metax-tech.com/ai-opentest/master/maca/vllm-metax:0.15.0-maca.ai20260227-177-torch2.8-py312-ubuntu22.04-amd64
+# public vllm-metax image
+# FROM pub-registry1.metax-tech.com/ai-opentest/master/maca/vllm-metax:0.15.0-maca.ai20260227-177-torch2.8-py312-ubuntu22.04-amd64
+
+# amd64 ubuntu 
+FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.15.0-maca.ai3.5.3.203-torch2.8-py312-ubuntu22.04-amd64 
+# amd64 kylin
+# FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.15.0-maca.ai3.5.3.203-torch2.8-py312-kylinv11-amd64
+
 
 # set vllm path
 ARG VLLM_PATH="/opt/conda/lib/python3.12/site-packages/vllm"
