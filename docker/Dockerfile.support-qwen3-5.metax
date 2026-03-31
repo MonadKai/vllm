@@ -18,4 +18,7 @@ ARG PIP_INSTALL_COMMAND="/opt/conda/bin/pip install"
 # install soxr librosa soundfile
 RUN ${PIP_INSTALL_COMMAND} soxr librosa soundfile -i ${PIP_INDEX_URL}
 
+# upgrade transformers to 5.4.0
+# RUN ${PIP_INSTALL_COMMAND} transformers==5.4.0 -i ${PIP_INDEX_URL}
+
 ENTRYPOINT ["vllm", "serve"]
