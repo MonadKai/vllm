@@ -1,0 +1,50 @@
+# -----------------------------------------------------------------------------
+# Qwen3-ASR OpenAI Realtime: layers branch v0.19.0___qwen3-asr-vad on top of the
+# official v0.19.0 image and installs wavekat-vad (required for realtime VAD segmentation).
+#
+# Diff vs v0.19.0 is shipped as docker/v0.19.0___qwen3-asr-vad.patch (git diff format).
+# Regenerate on the host (git is only needed on your machine, not inside this image):
+#   git diff v0.19.0..v0.19.0___qwen3-asr-vad > docker/v0.19.0___qwen3-asr-vad.patch
+#
+# Build from the vLLM repository root (required so COPY can find the patch):
+#   docker build -f docker/Dockerfile.qwen3-asr-realtime-transcription-with-vad -t vllm-openai:0.19.0___qwen3-asr-realtime-transcription-with-vad .
+#
+# Optional: use the upstream image name, or ONNX-based VAD backends (onnxruntime is pulled in via extras):
+#   docker build -f docker/Dockerfile.qwen3-asr-realtime-transcription-with-vad \
+#     --build-arg BASE_IMAGE=vllm/vllm-openai:v0.19.0 \
+#     --build-arg PRIVATE_PYPI_HOST=your private pypi host \
+#     --build-arg PRIVATE_PYPI_INDEX_URL=http://your private pypi host/repository/pypi/simple \
+#     --build-arg WAVEKAT_VAD_EXTRAS=all \
+#     -t vllm-openai:0.19.0___qwen3-asr-realtime-transcription-with-vad .
+# -----------------------------------------------------------------------------
+
+ARG BASE_IMAGE=docker.m.daocloud.io/vllm/vllm-openai:v0.19.0
+FROM ${BASE_IMAGE}
+
+# Patch paths are vllm/...; apply from the parent of the installed `vllm` package (matches official images).
+ARG VLLM_SITE_PACKAGES=/usr/local/lib/python3.12/dist-packages
+
+ARG PRIVATE_PYPI_HOST
+ARG PRIVATE_PYPI_INDEX_URL
+
+# wavekat-vad extras: webrtc | silero | ten-vad | firered | all (see py-wavekat-vad / PyPI)
+ARG WAVEKAT_VAD_EXTRAS=all
+
+LABEL org.opencontainers.image.title="vLLM OpenAI with Qwen3-ASR realtime (VAD patch)" \
+      org.opencontainers.image.description="v0.19.0 + v0.19.0___qwen3-asr-vad.patch + wavekat-vad"
+
+USER root
+
+COPY docker/v0.19.0___qwen3-asr-vad.patch /tmp/v0.19.0___qwen3-asr-vad.patch
+
+# Base image has no git; we only need GNU patch (not git apply) to apply the unified diff.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch \
+    && patch -d "${VLLM_SITE_PACKAGES}" -p1 < /tmp/v0.19.0___qwen3-asr-vad.patch \
+    && rm -f /tmp/v0.19.0___qwen3-asr-vad.patch \
+    && python3 -m pip install --no-cache-dir --index-url ${PRIVATE_PYPI_INDEX_URL} --trusted-host ${PRIVATE_PYPI_HOST} "wavekat-vad[${WAVEKAT_VAD_EXTRAS}]" \
+    && apt-get purge -y patch \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["vllm", "serve"]

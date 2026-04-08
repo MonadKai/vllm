@@ -1,0 +1,997 @@
+diff --git a/vllm/config/speech_to_text.py b/vllm/config/speech_to_text.py
+index e0d72eb20..1d2575cd2 100644
+--- a/vllm/config/speech_to_text.py
++++ b/vllm/config/speech_to_text.py
+@@ -1,9 +1,13 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++from typing import Literal
+ 
+ from vllm.config.utils import config
+ 
++RealtimeSegmentationMode = Literal["fixed", "vad"]
++RealtimeVadBackend = Literal["webrtc", "silero", "ten_vad", "firered"]
++
+ 
+ @config
+ class SpeechToTextConfig:
+@@ -37,3 +41,42 @@ class SpeechToTextConfig:
+             self.min_energy_split_window_size is not None
+             and self.max_audio_clip_s is not None
+         )
++
++    # --- Realtime (WebSocket) streaming: Qwen3-ASR etc. ---
++
++    realtime_segmentation_mode: RealtimeSegmentationMode = "vad"
++    """How to split streaming audio into ASR segments: fixed-duration windows
++    or voice-activity (VAD) boundaries."""
++
++    realtime_fixed_segment_duration_s: float = 5.0
++    """When ``realtime_segmentation_mode`` is ``\"fixed\"``, emit one segment
++    every this many seconds of audio."""
++
++    realtime_vad_backend: RealtimeVadBackend = "webrtc"
++    """VAD backend when ``realtime_segmentation_mode`` is ``\"vad\"`` and
++    wavekat-vad is installed: ``webrtc`` (webrtcvad); ``silero``, ``ten_vad``,
++    and ``firered`` use ONNX models with continuous speech probabilities (16 kHz;
++    frame sizes differ per backend — see wavekat-vad)."""
++
++    realtime_vad_speech_threshold: float = 0.5
++    """For Silero, TEN-VAD, and FireRedVAD: probability above this counts as
++    speech. For WebRTC, values are binary (0/1); this threshold is not used."""
++
++    realtime_vad_min_speech_ms: int = 100
++    """Minimum voiced duration before a segment can start."""
++
++    realtime_vad_min_silence_ms: int = 300
++    """Minimum trailing silence duration to end a speech segment."""
++
++    realtime_vad_max_segment_s: float = 30.0
++    """Hard cap on segment length; long speech is split at this duration."""
++
++    realtime_vad_webrtc_mode: int = 0
++    """WebRTC VAD aggressiveness (0=quality .. 3=very aggressive)."""
++
++    realtime_vad_webrtc_frame_duration_ms: int = 30
++    """WebRTC frame size: 10, 20, or 30 ms."""
++
++    realtime_min_asr_segment_s: float = 0.5
++    """Segments shorter than this (seconds) are zero-padded to this length,
++    matching Qwen3-ASR offline chunking heuristics."""
+diff --git a/vllm/entrypoints/openai/realtime/connection.py b/vllm/entrypoints/openai/realtime/connection.py
+index 58af32905..2a370c096 100644
+--- a/vllm/entrypoints/openai/realtime/connection.py
++++ b/vllm/entrypoints/openai/realtime/connection.py
+@@ -18,10 +18,16 @@ from vllm.entrypoints.openai.realtime.protocol import (
+     ErrorEvent,
+     InputAudioBufferAppend,
+     InputAudioBufferCommit,
++    RealtimeTranscriptionSegment,
+     SessionCreated,
+     TranscriptionDelta,
+     TranscriptionDone,
+ )
++from vllm.model_executor.models.qwen3_asr_text import (
++    parse_qwen3_asr_output,
++    split_qwen3_asr_concatenated,
++)
++from vllm.model_executor.models.qwen3_asr_realtime import Qwen3ASRRealtimeGeneration
+ from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
+ from vllm.exceptions import VLLMValidationError
+ from vllm.logger import init_logger
+@@ -175,21 +181,33 @@ class RealtimeConnection:
+         # Create audio stream generator
+         audio_stream = self.audio_stream_generator()
+         input_stream = asyncio.Queue[list[int]]()
+-
+-        # Transform to StreamingInput generator
+-        streaming_input_gen = self.serving.transcribe_realtime(
+-            audio_stream, input_stream
+-        )
+-
+-        # Start generation task
+-        self.generation_task = asyncio.create_task(
+-            self._run_generation(streaming_input_gen, input_stream)
+-        )
++        segment_metadata: list[dict[str, float]] = []
++
++        # Start generation task (Qwen3 ASR uses one generate() per VAD segment so
++        # the engine does not prepend prior assistant tokens to the next chunk.)
++        if getattr(self.serving.model_cls, "realtime_independent_segments", False):
++            self.generation_task = asyncio.create_task(
++                self._run_generation_independent_segments(
++                    audio_stream, input_stream, segment_metadata
++                )
++            )
++        else:
++            streaming_input_gen = self.serving.transcribe_realtime(
++                audio_stream,
++                input_stream,
++                segment_metadata_sink=segment_metadata,
++            )
++            self.generation_task = asyncio.create_task(
++                self._run_generation(
++                    streaming_input_gen, input_stream, segment_metadata
++                )
++            )
+ 
+     async def _run_generation(
+         self,
+         streaming_input_gen: AsyncGenerator,
+         input_stream: asyncio.Queue[list[int]],
++        segment_metadata: list[dict[str, float]],
+     ):
+         """Run the generation and stream results back to the client.
+ 
+@@ -246,15 +264,13 @@ class RealtimeConnection:
+                     # finish because websocket connection was killed
+                     break
+ 
+-            usage = UsageInfo(
+-                prompt_tokens=prompt_token_ids_len,
+-                completion_tokens=completion_tokens_len,
+-                total_tokens=prompt_token_ids_len + completion_tokens_len,
++            await self._send_transcription_done(
++                full_text,
++                prompt_token_ids_len,
++                completion_tokens_len,
++                segment_metadata,
+             )
+ 
+-            # Send final completion event
+-            await self.send(TranscriptionDone(text=full_text, usage=usage))
+-
+             # Clear queue for next utterance
+             while not self.audio_queue.empty():
+                 self.audio_queue.get_nowait()
+@@ -263,6 +279,116 @@ class RealtimeConnection:
+             logger.exception("Error in generation: %s", e)
+             await self.send_error(str(e), "processing_error")
+ 
++    async def _run_generation_independent_segments(
++        self,
++        audio_stream: AsyncGenerator[np.ndarray, None],
++        input_stream: asyncio.Queue[list[int]],
++        segment_metadata: list[dict[str, float]],
++    ) -> None:
++        """One ``generate()`` per audio segment (no streaming-session KV merge)."""
++        request_base = f"rt-{self.connection_id}-{uuid4()}"
++        full_text = ""
++        prompt_token_ids_len = 0
++        completion_tokens_len = 0
++
++        try:
++            from vllm.sampling_params import RequestOutputKind, SamplingParams
++
++            sampling_params = SamplingParams.from_optional(
++                temperature=0.0,
++                max_tokens=self.serving.model_cls.realtime_max_tokens,
++                output_kind=RequestOutputKind.DELTA,
++                skip_clone=True,
++            )
++
++            seg_idx = 0
++            async for engine_input in self.serving.iter_realtime_engine_inputs(
++                audio_stream,
++                input_stream,
++                segment_metadata_sink=segment_metadata,
++            ):
++                request_id = f"{request_base}-seg{seg_idx}"
++                seg_idx += 1
++                result_gen = self.serving.engine_client.generate(
++                    prompt=engine_input,
++                    sampling_params=sampling_params,
++                    request_id=request_id,
++                )
++                first_in_seg = True
++                async for output in result_gen:
++                    if output.outputs and len(output.outputs) > 0:
++                        if first_in_seg and output.prompt_token_ids:
++                            prompt_token_ids_len += len(output.prompt_token_ids)
++                            first_in_seg = False
++
++                        delta = output.outputs[0].text
++                        full_text += delta
++                        completion_tokens_len += len(output.outputs[0].token_ids)
++                        await self.send(TranscriptionDelta(delta=delta))
++
++                    if not self._is_connected:
++                        break
++
++            await self._send_transcription_done(
++                full_text,
++                prompt_token_ids_len,
++                completion_tokens_len,
++                segment_metadata,
++            )
++
++            while not self.audio_queue.empty():
++                self.audio_queue.get_nowait()
++
++        except Exception as e:
++            logger.exception("Error in generation: %s", e)
++            await self.send_error(str(e), "processing_error")
++
++    async def _send_transcription_done(
++        self,
++        full_text: str,
++        prompt_token_ids_len: int,
++        completion_tokens_len: int,
++        segment_metadata: list[dict[str, float]],
++    ) -> None:
++        usage = UsageInfo(
++            prompt_tokens=prompt_token_ids_len,
++            completion_tokens=completion_tokens_len,
++            total_tokens=prompt_token_ids_len + completion_tokens_len,
++        )
++
++        language: str | None = None
++        segments_out: list[RealtimeTranscriptionSegment] | None = None
++        display_text = full_text
++        if issubclass(self.serving.model_cls, Qwen3ASRRealtimeGeneration):
++            language, display_text = parse_qwen3_asr_output(full_text)
++            pairs = split_qwen3_asr_concatenated(full_text)
++            if segment_metadata:
++                n = min(len(segment_metadata), len(pairs))
++                segments_out = [
++                    RealtimeTranscriptionSegment(
++                        start=segment_metadata[i]["start_s"],
++                        end=segment_metadata[i]["end_s"],
++                        language=pairs[i][0] or None,
++                        text=pairs[i][1] or None,
++                    )
++                    for i in range(n)
++                ]
++                if len(segment_metadata) != len(pairs):
++                    logger.debug(
++                        "VAD segment count %d != parsed text segment count %d",
++                        len(segment_metadata),
++                        len(pairs),
++                    )
++
++        await self.send(
++            TranscriptionDone(
++                text=display_text,
++                usage=usage,
++                language=language,
++                segments=segments_out,
++            )
++        )
++
+     async def send(
+         self, event: SessionCreated | TranscriptionDelta | TranscriptionDone
+     ):
+diff --git a/vllm/entrypoints/openai/realtime/protocol.py b/vllm/entrypoints/openai/realtime/protocol.py
+index 25c5cd39d..cae679e1e 100644
+--- a/vllm/entrypoints/openai/realtime/protocol.py
++++ b/vllm/entrypoints/openai/realtime/protocol.py
+@@ -52,12 +52,33 @@ class TranscriptionDelta(OpenAIBaseModel):
+     delta: str  # Incremental text
+ 
+ 
++class RealtimeTranscriptionSegment(OpenAIBaseModel):
++    """One ASR segment with optional VAD time range and per-segment fields."""
++
++    start: float
++    """Segment start time in seconds on the input stream timeline."""
++
++    end: float
++    """Segment end time in seconds on the input stream timeline."""
++
++    language: str | None = None
++    """Detected or parsed language for this segment (Qwen3-ASR style output)."""
++
++    text: str | None = None
++    """Transcription text for this segment when it can be split from the model."""
++
++
+ class TranscriptionDone(OpenAIBaseModel):
+     """Final transcription with usage stats"""
+ 
+     type: Literal["transcription.done"] = "transcription.done"
+     text: str  # Complete transcription
+     usage: UsageInfo | None = None
++    language: str | None = None
++    """Merged detected language when the model emits Qwen3-ASR metadata."""
++
++    segments: list[RealtimeTranscriptionSegment] | None = None
++    """Per-segment timestamps (from VAD or fixed windows) and optional text/language."""
+ 
+ 
+ class ErrorEvent(OpenAIBaseModel):
+diff --git a/vllm/entrypoints/openai/realtime/serving.py b/vllm/entrypoints/openai/realtime/serving.py
+index 710d1907a..58bcf97bc 100644
+--- a/vllm/entrypoints/openai/realtime/serving.py
++++ b/vllm/entrypoints/openai/realtime/serving.py
+@@ -12,7 +12,7 @@ from vllm.engine.protocol import EngineClient, StreamingInput
+ from vllm.entrypoints.logger import RequestLogger
+ from vllm.entrypoints.openai.engine.serving import OpenAIServing
+ from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+-from vllm.inputs import PromptType
++from vllm.inputs import EngineInput, PromptType
+ from vllm.logger import init_logger
+ from vllm.model_executor.models.interfaces import SupportsRealtime
+ from vllm.renderers.inputs.preprocess import parse_model_prompt
+@@ -56,6 +56,8 @@ class OpenAIServingRealtime(OpenAIServing):
+         self,
+         audio_stream: AsyncGenerator[np.ndarray, None],
+         input_stream: asyncio.Queue[list[int]],
++        *,
++        segment_metadata_sink: list[dict[str, float]] | None = None,
+     ) -> AsyncGenerator[StreamingInput, None]:
+         """Transform audio stream into StreamingInput for engine.generate().
+ 
+@@ -65,6 +67,9 @@ class OpenAIServingRealtime(OpenAIServing):
+                 generation outputs. Used for autoregressive multi-turn
+                 processing where each generation's output becomes the context
+                 for the next iteration.
++            segment_metadata_sink: If provided, each emitted audio segment
++                appends ``{\"start_s\": float, \"end_s\": float}`` (stream
++                timeline in seconds) for models that support it.
+ 
+         Yields:
+             StreamingInput objects containing audio prompts for the engine
+@@ -77,7 +82,10 @@ class OpenAIServingRealtime(OpenAIServing):
+         stream_input_iter = cast(
+             AsyncGenerator[PromptType, None],
+             self.model_cls.buffer_realtime_audio(
+-                audio_stream, input_stream, model_config
++                audio_stream,
++                input_stream,
++                model_config,
++                segment_metadata_sink=segment_metadata_sink,
+             ),
+         )
+ 
+@@ -86,3 +94,33 @@ class OpenAIServingRealtime(OpenAIServing):
+             (engine_input,) = await renderer.render_cmpl_async([parsed_prompt])
+ 
+             yield StreamingInput(prompt=engine_input)
++
++    async def iter_realtime_engine_inputs(
++        self,
++        audio_stream: AsyncGenerator[np.ndarray, None],
++        input_stream: asyncio.Queue[list[int]],
++        *,
++        segment_metadata_sink: list[dict[str, float]] | None = None,
++    ) -> AsyncGenerator[EngineInput, None]:
++        """Like :meth:`transcribe_realtime` but yield plain engine inputs.
++
++        Used when each segment must be a separate ``generate()`` call (no
++        streaming-session prompt carry-over between chunks).
++        """
++        model_config = self.model_config
++        renderer = self.renderer
++
++        stream_input_iter = cast(
++            AsyncGenerator[PromptType, None],
++            self.model_cls.buffer_realtime_audio(
++                audio_stream,
++                input_stream,
++                model_config,
++                segment_metadata_sink=segment_metadata_sink,
++            ),
++        )
++
++        async for prompt in stream_input_iter:
++            parsed_prompt = parse_model_prompt(model_config, prompt)
++            (engine_input,) = await renderer.render_cmpl_async([parsed_prompt])
++            yield engine_input
+diff --git a/vllm/model_executor/models/interfaces.py b/vllm/model_executor/models/interfaces.py
+index fa59931d0..0d5536ab8 100644
+--- a/vllm/model_executor/models/interfaces.py
++++ b/vllm/model_executor/models/interfaces.py
+@@ -1048,6 +1048,8 @@ class SupportsRealtime(Protocol):
+         audio_stream: AsyncGenerator[np.ndarray, None],
+         input_stream: asyncio.Queue[list[int]],
+         model_config: ModelConfig,
++        *,
++        segment_metadata_sink: list[dict[str, float]] | None = None,
+     ) -> AsyncGenerator[PromptType, None]: ...
+ 
+ 
+diff --git a/vllm/model_executor/models/qwen3_asr_realtime.py b/vllm/model_executor/models/qwen3_asr_realtime.py
+index 6405c101b..3641f9a59 100644
+--- a/vllm/model_executor/models/qwen3_asr_realtime.py
++++ b/vllm/model_executor/models/qwen3_asr_realtime.py
+@@ -18,6 +18,7 @@
+ 
+ import asyncio
+ from collections.abc import AsyncGenerator, Mapping
++from typing import ClassVar
+ 
+ import numpy as np
+ import torch
+@@ -35,6 +36,7 @@ from vllm.model_executor.models.qwen3_asr import (
+     Qwen3ASRProcessingInfo,
+     _get_feat_extract_output_lengths,
+ )
++from vllm.model_executor.models.qwen3_asr_vad import Qwen3ASRVadSegmentBuffer
+ from vllm.multimodal import MULTIMODAL_REGISTRY
+ from vllm.multimodal.cache import _I, BaseMultiModalProcessorCache
+ from vllm.multimodal.inputs import MultiModalKwargsOptionalItems
+@@ -100,6 +102,21 @@ class Qwen3ASRRealtimeBuffer:
+         return audio
+ 
+ 
++def _pad_min_asr_length(
++    audio: np.ndarray, sampling_rate: int, min_segment_s: float
++) -> np.ndarray:
++    min_len = int(min_segment_s * sampling_rate)
++    a = np.asarray(audio, dtype=np.float32).reshape(-1)
++    if a.size < min_len:
++        a = np.pad(
++            a,
++            (0, min_len - a.size),
++            mode="constant",
++            constant_values=0.0,
++        ).astype(np.float32)
++    return a
++
++
+ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
+     def __init__(
+         self,
+@@ -177,7 +194,13 @@ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
+     dummy_inputs=Qwen3ASRDummyInputsBuilder,
+ )
+ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealtime):
+-    realtime_max_tokens = 64
++    # Enough headroom for ~10–20 s Chinese speech per VAD segment.
++    realtime_max_tokens: ClassVar[int] = 512
++    #: Each segment must be a fresh request: the streaming-input scheduler
++    #: otherwise prepends the previous assistant completion to the next prompt
++    #: (intended for Voxtral-style continuation), which duplicates transcript
++    #: text and steals the token budget from the current segment.
++    realtime_independent_segments: ClassVar[bool] = True
+ 
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+         super().__init__(vllm_config=vllm_config, prefix=prefix)
+@@ -188,18 +211,35 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
+         audio_stream: AsyncGenerator[np.ndarray, None],
+         input_stream: asyncio.Queue[list[int]],
+         model_config: ModelConfig,
++        *,
++        segment_metadata_sink: list[dict[str, float]] | None = None,
+     ) -> AsyncGenerator[PromptType, None]:
+         processor = cached_processor_from_config(model_config)
+         feature_extractor = processor.feature_extractor
+         sampling_rate = feature_extractor.sampling_rate
+         tokenizer = cached_tokenizer_from_config(model_config)
+ 
+-        # Use a small segment size for low-latency streaming.
+-        segment_duration_s = 5.0
+-        buffer = Qwen3ASRRealtimeBuffer(
+-            sampling_rate=sampling_rate,
+-            segment_duration_s=segment_duration_s,
+-        )
++        stt = cls.get_speech_to_text_config(model_config, "realtime")
++
++        buffer: Qwen3ASRRealtimeBuffer | Qwen3ASRVadSegmentBuffer
++        if stt.realtime_segmentation_mode == "vad":
++            try:
++                buffer = Qwen3ASRVadSegmentBuffer(sampling_rate, stt)
++            except RuntimeError:
++                logger.warning(
++                    "wavekat-vad is not installed or failed to load; "
++                    "falling back to fixed-duration realtime segments. "
++                    "Install with: pip install 'wavekat-vad[webrtc]'"
++                )
++                buffer = Qwen3ASRRealtimeBuffer(
++                    sampling_rate=sampling_rate,
++                    segment_duration_s=stt.realtime_fixed_segment_duration_s,
++                )
++        else:
++            buffer = Qwen3ASRRealtimeBuffer(
++                sampling_rate=sampling_rate,
++                segment_duration_s=stt.realtime_fixed_segment_duration_s,
++            )
+ 
+         audio_placeholder = cls.get_placeholder_str("audio", 0)
+         prompt_template = (
+@@ -208,21 +248,60 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
+ 
+         prompt_token_ids = tokenizer.encode(prompt_template)
+ 
+-        async for audio_chunk in audio_stream:
+-            buffer.write_audio(audio_chunk)
++        stream_cursor_s = 0.0
+ 
+-            while (segment := buffer.read_audio()) is not None:
++        def append_meta(start_s: float, end_s: float) -> None:
++            if segment_metadata_sink is not None:
++                segment_metadata_sink.append(
++                    {"start_s": float(start_s), "end_s": float(end_s)}
++                )
++
++        async for audio_chunk in audio_stream:
++            if isinstance(buffer, Qwen3ASRVadSegmentBuffer):
++                for vad_seg in buffer.write_audio(audio_chunk):
++                    append_meta(vad_seg.start_s, vad_seg.end_s)
++                    yield TokensPrompt(
++                        prompt_token_ids=prompt_token_ids,
++                        multi_modal_data={"audio": vad_seg.audio},
++                    )
++            else:
++                buffer.write_audio(audio_chunk)
++                while (segment := buffer.read_audio()) is not None:
++                    dur_s = len(segment) / float(sampling_rate)
++                    t0, t1 = stream_cursor_s, stream_cursor_s + dur_s
++                    stream_cursor_s = t1
++                    append_meta(t0, t1)
++                    yield TokensPrompt(
++                        prompt_token_ids=prompt_token_ids,
++                        multi_modal_data={
++                            "audio": _pad_min_asr_length(
++                                segment, sampling_rate, stt.realtime_min_asr_segment_s
++                            )
++                        },
++                    )
++
++        if isinstance(buffer, Qwen3ASRVadSegmentBuffer):
++            tail = buffer.flush()
++            if tail is not None and tail.audio.size > 0:
++                append_meta(tail.start_s, tail.end_s)
+                 yield TokensPrompt(
+                     prompt_token_ids=prompt_token_ids,
+-                    multi_modal_data={"audio": segment},
++                    multi_modal_data={"audio": tail.audio},
++                )
++        else:
++            remaining = buffer.flush()
++            if remaining is not None and len(remaining) > 0:
++                dur_s = len(remaining) / float(sampling_rate)
++                t0, t1 = stream_cursor_s, stream_cursor_s + dur_s
++                append_meta(t0, t1)
++                yield TokensPrompt(
++                    prompt_token_ids=prompt_token_ids,
++                    multi_modal_data={
++                        "audio": _pad_min_asr_length(
++                            remaining, sampling_rate, stt.realtime_min_asr_segment_s
++                        )
++                    },
+                 )
+-
+-        remaining = buffer.flush()
+-        if remaining is not None and len(remaining) > 0:
+-            yield TokensPrompt(
+-                prompt_token_ids=prompt_token_ids,
+-                multi_modal_data={"audio": remaining},
+-            )
+ 
+     @classmethod
+     def get_speech_to_text_config(
+diff --git a/vllm/model_executor/models/qwen3_asr_text.py b/vllm/model_executor/models/qwen3_asr_text.py
+new file mode 100644
+index 000000000..6d2215743
+--- /dev/null
++++ b/vllm/model_executor/models/qwen3_asr_text.py
+@@ -0,0 +1,99 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright 2026 The Qwen team.
++"""Parse Qwen3-ASR model text output (language + transcription).
++
++Aligned with ``qwen_asr.inference.utils.parse_asr_output`` in the official
++Qwen3-ASR package (simplified: no repetition repair).
++"""
++
++from __future__ import annotations
++
++import re
++from typing import List, Tuple
++
++_ASR_TEXT_TAG = "<asr_text>"
++_LANG_PREFIX = "language "
++
++
++def _normalize_language_name(language: str) -> str:
++    s = str(language).strip()
++    if not s:
++        return ""
++    return s[:1].upper() + s[1:].lower()
++
++
++def parse_qwen3_asr_output(
++    raw: str | None, user_language: str | None = None
++) -> tuple[str, str]:
++    """Parse one Qwen3-ASR completion into ``(language, text)``.
++
++    If ``user_language`` is set, the raw string is treated as plain text and
++    language is forced to ``user_language``.
++    """
++    if raw is None:
++        return "", ""
++    s = str(raw).strip()
++    if not s:
++        return "", ""
++
++    if user_language:
++        return user_language, s
++
++    has_tag = _ASR_TEXT_TAG in s
++    if not has_tag:
++        return "", s.strip()
++
++    meta_part, text_part = s.split(_ASR_TEXT_TAG, 1)
++    meta_lower = meta_part.lower()
++
++    if "language none" in meta_lower:
++        t = text_part.strip()
++        if not t:
++            return "", ""
++        return "", t
++
++    lang = ""
++    for line in meta_part.splitlines():
++        line = line.strip()
++        if not line:
++            continue
++        low = line.lower()
++        if low.startswith(_LANG_PREFIX):
++            val = line[len(_LANG_PREFIX) :].strip()
++            if val:
++                lang = _normalize_language_name(val)
++            break
++
++    return lang, text_part.strip()
++
++
++def split_qwen3_asr_concatenated(raw: str | None) -> List[Tuple[str, str]]:
++    """Split concatenated per-segment ``language …<asr_text>…`` outputs.
++
++    Falls back to :func:`parse_qwen3_asr_output` when there is no repeatable
++    multi-segment pattern.
++    """
++    if raw is None:
++        return []
++    s = str(raw).strip()
++    if not s:
++        return []
++
++    if _ASR_TEXT_TAG not in s:
++        lang, text = parse_qwen3_asr_output(s)
++        return [(lang, text)]
++
++    # Repeated segments: language X<asr_text>TEXT ... language Y<asr_text>...
++    pattern = re.compile(
++        r"language\s+(\S+?)\s*<asr_text>\s*(.*?)(?=language\s+\S+\s*<asr_text>|$)",
++        re.DOTALL,
++    )
++    matches = list(pattern.finditer(s))
++    if matches:
++        return [
++            (_normalize_language_name(m.group(1)), m.group(2).strip()) for m in matches
++        ]
++
++    lang, text = parse_qwen3_asr_output(s)
++    return [(lang, text)]
+diff --git a/vllm/model_executor/models/qwen3_asr_vad.py b/vllm/model_executor/models/qwen3_asr_vad.py
+new file mode 100644
+index 000000000..e3052fc43
+--- /dev/null
++++ b/vllm/model_executor/models/qwen3_asr_vad.py
+@@ -0,0 +1,309 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright 2026 The Qwen team.
++"""Streaming VAD segmentation for Qwen3-ASR realtime (wavekat-vad optional)."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++import numpy as np
++
++from vllm.config.speech_to_text import SpeechToTextConfig
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
++VAD_WORKING_SR = 16_000
++
++
++def _resample_linear(x: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
++    if orig_sr == target_sr:
++        return np.asarray(x, dtype=np.float32)
++    x = np.asarray(x, dtype=np.float32).reshape(-1)
++    if x.size == 0:
++        return x
++    duration = len(x) / float(orig_sr)
++    new_len = max(1, int(duration * target_sr))
++    t_old = np.linspace(0.0, duration, num=len(x), endpoint=False)
++    t_new = np.linspace(0.0, duration, num=new_len, endpoint=False)
++    return np.interp(t_new, t_old, x).astype(np.float32)
++
++
++def _float_to_int16(audio: np.ndarray) -> np.ndarray:
++    a = np.asarray(audio, dtype=np.float32).reshape(-1)
++    return np.clip(a * 32768.0, -32768, 32767).astype(np.int16)
++
++
++@dataclass
++class VadSegmentResult:
++    audio: np.ndarray
++    start_s: float
++    end_s: float
++
++
++class _VadFsm:
++    def __init__(
++        self,
++        *,
++        frame_duration_ms: float,
++        speech_threshold: float,
++        min_speech_ms: float,
++        min_silence_ms: float,
++        max_segment_ms: float,
++        is_binary_vad: bool,
++    ) -> None:
++        self.frame_duration_ms = frame_duration_ms
++        self.speech_threshold = speech_threshold
++        self.min_speech_ms = min_speech_ms
++        self.min_silence_ms = min_silence_ms
++        self.max_segment_ms = max_segment_ms
++        self.is_binary_vad = is_binary_vad
++
++        self.in_speech = False
++        self.pending_speech_ms = 0.0
++        self.silence_ms = 0.0
++        self.speech_ms = 0.0
++        self.seg_vad_start: int | None = None
++
++    def _is_speech(self, p: float) -> bool:
++        if self.is_binary_vad:
++            return p >= 0.5
++        return p >= self.speech_threshold
++
++    def step(
++        self,
++        prob: float,
++        *,
++        vad_sample_after_frame: int,
++        frame_samples: int,
++    ) -> tuple[int, int] | None:
++        """Return ``(start_v, end_v)`` vad sample indices when a segment ends."""
++
++        fd = self.frame_duration_ms
++        speech = self._is_speech(prob)
++
++        if not self.in_speech:
++            if speech:
++                self.pending_speech_ms += fd
++                self.silence_ms = 0.0
++                if self.pending_speech_ms >= self.min_speech_ms:
++                    self.in_speech = True
++                    self.seg_vad_start = vad_sample_after_frame - frame_samples
++                    self.speech_ms = self.pending_speech_ms
++                    self.silence_ms = 0.0
++                    self.pending_speech_ms = 0.0
++            else:
++                self.pending_speech_ms = 0.0
++            return None
++
++        if speech:
++            self.silence_ms = 0.0
++            self.speech_ms += fd
++        else:
++            self.silence_ms += fd
++
++        should_emit = (
++            self.speech_ms >= self.max_segment_ms
++            or self.silence_ms >= self.min_silence_ms
++        )
++
++        if should_emit and self.seg_vad_start is not None:
++            start_v = self.seg_vad_start
++            end_v = vad_sample_after_frame
++            self._reset()
++            return (start_v, end_v)
++
++        return None
++
++    def _reset(self) -> None:
++        self.in_speech = False
++        self.pending_speech_ms = 0.0
++        self.silence_ms = 0.0
++        self.speech_ms = 0.0
++        self.seg_vad_start = None
++
++
++def try_create_wavekat_adapter(stt: SpeechToTextConfig):
++    """Returns ``(FrameAdapter or None, is_binary)``.
++
++    ``is_binary`` is True only for WebRTC (hard 0/1); Silero, TEN-VAD, and
++    FireRedVAD use continuous speech probabilities in ``[0, 1]``.
++    """
++    try:
++        from wavekat_vad import FrameAdapter
++    except ImportError:
++        return None, True
++
++    if stt.realtime_vad_backend == "webrtc":
++        try:
++            from wavekat_vad.backends.webrtc import WebRtcVad, WebRtcVadMode
++        except ImportError:
++            return None, True
++        mode = WebRtcVadMode(int(stt.realtime_vad_webrtc_mode))
++        fd = int(stt.realtime_vad_webrtc_frame_duration_ms)
++        if fd not in (10, 20, 30):
++            logger.warning(
++                "webrtc frame duration %s ms invalid; using 30 ms", fd
++            )
++            fd = 30
++        inner = WebRtcVad(
++            sample_rate=VAD_WORKING_SR,
++            mode=mode,
++            frame_duration_ms=fd,
++        )
++        return FrameAdapter(inner), True
++    if stt.realtime_vad_backend == "ten_vad":
++        try:
++            from wavekat_vad.backends.ten_vad import TenVad
++        except ImportError:
++            return None, True
++        inner = TenVad()
++        return FrameAdapter(inner), False
++    if stt.realtime_vad_backend == "firered":
++        try:
++            from wavekat_vad.backends.firered import FireRedVad
++        except ImportError:
++            return None, True
++        inner = FireRedVad()
++        return FrameAdapter(inner), False
++    if stt.realtime_vad_backend == "silero":
++        try:
++            from wavekat_vad.backends.silero import SileroVad
++        except ImportError:
++            return None, True
++        inner = SileroVad(sample_rate=VAD_WORKING_SR)
++        return FrameAdapter(inner), False
++    return None, True
++
++
++class Qwen3ASRVadSegmentBuffer:
++    """Buffer incoming float32 PCM and emit speech segments from VAD."""
++
++    def __init__(self, sampling_rate: int, stt: SpeechToTextConfig) -> None:
++        self.sr = int(sampling_rate)
++        self.stt = stt
++        adapter, binary = try_create_wavekat_adapter(stt)
++        if adapter is None:
++            raise RuntimeError("wavekat_vad is not installed")
++
++        self._adapter = adapter
++        cap = self._adapter.capabilities
++        frame_ms = float(cap.frame_duration_ms)
++        self._frame_samples = cap.frame_size
++        self._fsm = _VadFsm(
++            frame_duration_ms=frame_ms,
++            speech_threshold=stt.realtime_vad_speech_threshold,
++            min_speech_ms=float(stt.realtime_vad_min_speech_ms),
++            min_silence_ms=float(stt.realtime_vad_min_silence_ms),
++            max_segment_ms=float(stt.realtime_vad_max_segment_s) * 1000.0,
++            is_binary_vad=binary,
++        )
++
++        self._orig: np.ndarray = np.array([], dtype=np.float32)
++        self._vad_total_samples = 0
++        self._trim_orig_samples = 0
++
++    def write_audio(self, chunk: np.ndarray) -> list[VadSegmentResult]:
++        chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
++        if chunk.size == 0:
++            return []
++
++        self._orig = np.concatenate([self._orig, chunk])
++        w16 = _resample_linear(chunk, self.sr, VAD_WORKING_SR)
++        int16 = _float_to_int16(w16)
++        probs = self._adapter.process_all(int16, VAD_WORKING_SR)
++
++        out: list[VadSegmentResult] = []
++        frame_samples = self._frame_samples
++
++        for p in probs:
++            self._vad_total_samples += frame_samples
++            span = self._fsm.step(
++                float(p),
++                vad_sample_after_frame=self._vad_total_samples,
++                frame_samples=frame_samples,
++            )
++            if span is not None:
++                start_v, end_v = span
++                seg = self._slice_segment(start_v, end_v)
++                if seg is not None:
++                    out.append(seg)
++                self._adapter.reset()
++
++        return out
++
++    def _slice_segment(
++        self, start_v: int, vad_end_exclusive: int
++    ) -> VadSegmentResult | None:
++        # ``start_v`` / ``vad_end_exclusive`` are cumulative VAD (16 kHz) sample
++        # indices from the start of the stream. Map to global indices in the
++        # original sample rate — do not add ``_trim_orig_samples`` here; that
++        # would double-count after the first emitted segment.
++        start_o_global = int(
++            round(start_v * (self.sr / float(VAD_WORKING_SR)))
++        )
++        end_o_global = int(
++            round(vad_end_exclusive * (self.sr / float(VAD_WORKING_SR)))
++        )
++        buf_end_global = self._trim_orig_samples + len(self._orig)
++        end_o_global = min(end_o_global, buf_end_global)
++        start_o_global = max(start_o_global, self._trim_orig_samples)
++        if end_o_global <= start_o_global:
++            return None
++
++        lo = start_o_global - self._trim_orig_samples
++        hi = end_o_global - self._trim_orig_samples
++        audio = self._orig[lo:hi].copy()
++        audio = self._maybe_pad_min_length(audio)
++        if audio.size == 0:
++            return None
++
++        start_s = start_v / float(VAD_WORKING_SR)
++        end_s = vad_end_exclusive / float(VAD_WORKING_SR)
++        self._trim_upto(end_o_global)
++        return VadSegmentResult(audio=audio, start_s=start_s, end_s=end_s)
++
++    def _maybe_pad_min_length(self, audio: np.ndarray) -> np.ndarray:
++        min_s = float(self.stt.realtime_min_asr_segment_s)
++        min_len = int(min_s * self.sr)
++        if audio.size < min_len:
++            pad = min_len - int(audio.size)
++            audio = np.pad(
++                audio,
++                (0, pad),
++                mode="constant",
++                constant_values=0.0,
++            ).astype(np.float32)
++        return audio
++
++    def _trim_upto(self, absolute_orig_end: int) -> None:
++        cut = absolute_orig_end - self._trim_orig_samples
++        if cut <= 0:
++            return
++        self._orig = self._orig[cut:]
++        self._trim_orig_samples = absolute_orig_end
++
++    def flush(self) -> VadSegmentResult | None:
++        """Emit remaining speech or tail audio."""
++        if self._orig.size == 0:
++            return None
++
++        if self._fsm.in_speech and self._fsm.seg_vad_start is not None:
++            start_v = self._fsm.seg_vad_start
++            end_v = max(self._vad_total_samples, start_v + 1)
++            seg = self._slice_segment(start_v, end_v)
++            self._fsm._reset()
++            self._adapter.reset()
++            return seg
++
++        if self._orig.size > 0:
++            tail = self._orig.copy()
++            t0 = self._trim_orig_samples / float(self.sr)
++            dur = len(tail) / float(self.sr)
++            self._orig = np.array([], dtype=np.float32)
++            self._trim_orig_samples += len(tail)
++            tail = self._maybe_pad_min_length(tail)
++            return VadSegmentResult(audio=tail, start_s=t0, end_s=t0 + dur)
++
++        return None
+diff --git a/vllm/model_executor/models/voxtral_realtime.py b/vllm/model_executor/models/voxtral_realtime.py
+index b70714a0d..0f7849ee5 100644
+--- a/vllm/model_executor/models/voxtral_realtime.py
++++ b/vllm/model_executor/models/voxtral_realtime.py
+@@ -239,6 +239,8 @@ class VoxtralRealtimeGeneration(VoxtralForConditionalGeneration, SupportsRealtim
+         audio_stream: AsyncGenerator[np.ndarray, None],
+         input_stream: asyncio.Queue[list[int]],
+         model_config: ModelConfig,
++        *,
++        segment_metadata_sink: list[dict[str, float]] | None = None,
+     ) -> AsyncGenerator[PromptType, None]:
+         tokenizer = cached_tokenizer_from_config(model_config)
+         audio_encoder = tokenizer.instruct.audio_encoder
