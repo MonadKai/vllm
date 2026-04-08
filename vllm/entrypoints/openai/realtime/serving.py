@@ -56,6 +56,8 @@ class OpenAIServingRealtime(OpenAIServing):
         self,
         audio_stream: AsyncGenerator[np.ndarray, None],
         input_stream: asyncio.Queue[list[int]],
+        *,
+        segment_metadata_sink: list[dict[str, float]] | None = None,
     ) -> AsyncGenerator[StreamingInput, None]:
         """Transform audio stream into StreamingInput for engine.generate().
 
@@ -65,6 +67,9 @@ class OpenAIServingRealtime(OpenAIServing):
                 generation outputs. Used for autoregressive multi-turn
                 processing where each generation's output becomes the context
                 for the next iteration.
+            segment_metadata_sink: If provided, each emitted audio segment
+                appends ``{\"start_s\": float, \"end_s\": float}`` (stream
+                timeline in seconds) for models that support it.
 
         Yields:
             StreamingInput objects containing audio prompts for the engine
@@ -77,7 +82,10 @@ class OpenAIServingRealtime(OpenAIServing):
         stream_input_iter = cast(
             AsyncGenerator[PromptType, None],
             self.model_cls.buffer_realtime_audio(
-                audio_stream, input_stream, model_config
+                audio_stream,
+                input_stream,
+                model_config,
+                segment_metadata_sink=segment_metadata_sink,
             ),
         )
 
