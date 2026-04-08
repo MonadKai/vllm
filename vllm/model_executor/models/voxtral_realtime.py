@@ -239,6 +239,8 @@ class VoxtralRealtimeGeneration(VoxtralForConditionalGeneration, SupportsRealtim
         audio_stream: AsyncGenerator[np.ndarray, None],
         input_stream: asyncio.Queue[list[int]],
         model_config: ModelConfig,
+        *,
+        segment_metadata_sink: list[dict[str, float]] | None = None,
     ) -> AsyncGenerator[PromptType, None]:
         tokenizer = cached_tokenizer_from_config(model_config)
         audio_encoder = tokenizer.instruct.audio_encoder
