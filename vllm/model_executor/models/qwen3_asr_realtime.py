@@ -35,6 +35,7 @@ from vllm.model_executor.models.qwen3_asr import (
     Qwen3ASRProcessingInfo,
     _get_feat_extract_output_lengths,
 )
+from vllm.model_executor.models.qwen3_asr_vad import Qwen3ASRVadSegmentBuffer
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.cache import _I, BaseMultiModalProcessorCache
 from vllm.multimodal.inputs import MultiModalKwargsOptionalItems
@@ -98,6 +99,21 @@ class Qwen3ASRRealtimeBuffer:
         audio = self._buffer[: self._filled_len].copy()
         self._filled_len = 0
         return audio
+
+
+def _pad_min_asr_length(
+    audio: np.ndarray, sampling_rate: int, min_segment_s: float
+) -> np.ndarray:
+    min_len = int(min_segment_s * sampling_rate)
+    a = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if a.size < min_len:
+        a = np.pad(
+            a,
+            (0, min_len - a.size),
+            mode="constant",
+            constant_values=0.0,
+        ).astype(np.float32)
+    return a
 
 
 class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
@@ -188,18 +204,35 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
         audio_stream: AsyncGenerator[np.ndarray, None],
         input_stream: asyncio.Queue[list[int]],
         model_config: ModelConfig,
+        *,
+        segment_metadata_sink: list[dict[str, float]] | None = None,
     ) -> AsyncGenerator[PromptType, None]:
         processor = cached_processor_from_config(model_config)
         feature_extractor = processor.feature_extractor
         sampling_rate = feature_extractor.sampling_rate
         tokenizer = cached_tokenizer_from_config(model_config)
 
-        # Use a small segment size for low-latency streaming.
-        segment_duration_s = 5.0
-        buffer = Qwen3ASRRealtimeBuffer(
-            sampling_rate=sampling_rate,
-            segment_duration_s=segment_duration_s,
-        )
+        stt = cls.get_speech_to_text_config(model_config, "realtime")
+
+        buffer: Qwen3ASRRealtimeBuffer | Qwen3ASRVadSegmentBuffer
+        if stt.realtime_segmentation_mode == "vad":
+            try:
+                buffer = Qwen3ASRVadSegmentBuffer(sampling_rate, stt)
+            except RuntimeError:
+                logger.warning(
+                    "wavekat-vad is not installed or failed to load; "
+                    "falling back to fixed-duration realtime segments. "
+                    "Install with: pip install 'wavekat-vad[webrtc]'"
+                )
+                buffer = Qwen3ASRRealtimeBuffer(
+                    sampling_rate=sampling_rate,
+                    segment_duration_s=stt.realtime_fixed_segment_duration_s,
+                )
+        else:
+            buffer = Qwen3ASRRealtimeBuffer(
+                sampling_rate=sampling_rate,
+                segment_duration_s=stt.realtime_fixed_segment_duration_s,
+            )
 
         audio_placeholder = cls.get_placeholder_str("audio", 0)
         prompt_template = (
@@ -208,21 +241,60 @@ class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealt
 
         prompt_token_ids = tokenizer.encode(prompt_template)
 
-        async for audio_chunk in audio_stream:
-            buffer.write_audio(audio_chunk)
+        stream_cursor_s = 0.0
 
-            while (segment := buffer.read_audio()) is not None:
-                yield TokensPrompt(
-                    prompt_token_ids=prompt_token_ids,
-                    multi_modal_data={"audio": segment},
+        def append_meta(start_s: float, end_s: float) -> None:
+            if segment_metadata_sink is not None:
+                segment_metadata_sink.append(
+                    {"start_s": float(start_s), "end_s": float(end_s)}
                 )
 
-        remaining = buffer.flush()
-        if remaining is not None and len(remaining) > 0:
-            yield TokensPrompt(
-                prompt_token_ids=prompt_token_ids,
-                multi_modal_data={"audio": remaining},
-            )
+        async for audio_chunk in audio_stream:
+            if isinstance(buffer, Qwen3ASRVadSegmentBuffer):
+                for vad_seg in buffer.write_audio(audio_chunk):
+                    append_meta(vad_seg.start_s, vad_seg.end_s)
+                    yield TokensPrompt(
+                        prompt_token_ids=prompt_token_ids,
+                        multi_modal_data={"audio": vad_seg.audio},
+                    )
+            else:
+                buffer.write_audio(audio_chunk)
+                while (segment := buffer.read_audio()) is not None:
+                    dur_s = len(segment) / float(sampling_rate)
+                    t0, t1 = stream_cursor_s, stream_cursor_s + dur_s
+                    stream_cursor_s = t1
+                    append_meta(t0, t1)
+                    yield TokensPrompt(
+                        prompt_token_ids=prompt_token_ids,
+                        multi_modal_data={
+                            "audio": _pad_min_asr_length(
+                                segment, sampling_rate, stt.realtime_min_asr_segment_s
+                            )
+                        },
+                    )
+
+        if isinstance(buffer, Qwen3ASRVadSegmentBuffer):
+            tail = buffer.flush()
+            if tail is not None and tail.audio.size > 0:
+                append_meta(tail.start_s, tail.end_s)
+                yield TokensPrompt(
+                    prompt_token_ids=prompt_token_ids,
+                    multi_modal_data={"audio": tail.audio},
+                )
+        else:
+            remaining = buffer.flush()
+            if remaining is not None and len(remaining) > 0:
+                dur_s = len(remaining) / float(sampling_rate)
+                t0, t1 = stream_cursor_s, stream_cursor_s + dur_s
+                append_meta(t0, t1)
+                yield TokensPrompt(
+                    prompt_token_ids=prompt_token_ids,
+                    multi_modal_data={
+                        "audio": _pad_min_asr_length(
+                            remaining, sampling_rate, stt.realtime_min_asr_segment_s
+                        )
+                    },
+                )
 
     @classmethod
     def get_speech_to_text_config(
