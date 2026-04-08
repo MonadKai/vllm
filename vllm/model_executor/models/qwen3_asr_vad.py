@@ -236,27 +236,32 @@ class Qwen3ASRVadSegmentBuffer:
     def _slice_segment(
         self, start_v: int, vad_end_exclusive: int
     ) -> VadSegmentResult | None:
-        start_o = self._trim_orig_samples + int(
+        # ``start_v`` / ``vad_end_exclusive`` are cumulative VAD (16 kHz) sample
+        # indices from the start of the stream. Map to global indices in the
+        # original sample rate — do not add ``_trim_orig_samples`` here; that
+        # would double-count after the first emitted segment.
+        start_o_global = int(
             round(start_v * (self.sr / float(VAD_WORKING_SR)))
         )
-        end_o = self._trim_orig_samples + int(
+        end_o_global = int(
             round(vad_end_exclusive * (self.sr / float(VAD_WORKING_SR)))
         )
-        end_o = min(end_o, self._trim_orig_samples + len(self._orig))
-        start_o = max(start_o, self._trim_orig_samples)
-        if end_o <= start_o:
+        buf_end_global = self._trim_orig_samples + len(self._orig)
+        end_o_global = min(end_o_global, buf_end_global)
+        start_o_global = max(start_o_global, self._trim_orig_samples)
+        if end_o_global <= start_o_global:
             return None
 
-        audio = self._orig[
-            start_o - self._trim_orig_samples : end_o - self._trim_orig_samples
-        ].copy()
+        lo = start_o_global - self._trim_orig_samples
+        hi = end_o_global - self._trim_orig_samples
+        audio = self._orig[lo:hi].copy()
         audio = self._maybe_pad_min_length(audio)
         if audio.size == 0:
             return None
 
         start_s = start_v / float(VAD_WORKING_SR)
         end_s = vad_end_exclusive / float(VAD_WORKING_SR)
-        self._trim_upto(end_o)
+        self._trim_upto(end_o_global)
         return VadSegmentResult(audio=audio, start_s=start_s, end_s=end_s)
 
     def _maybe_pad_min_length(self, audio: np.ndarray) -> np.ndarray:
