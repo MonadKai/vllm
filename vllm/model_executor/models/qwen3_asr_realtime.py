@@ -18,6 +18,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -193,7 +194,13 @@ class Qwen3ASRRealtimeMultiModalProcessor(Qwen3ASRMultiModalProcessor):
     dummy_inputs=Qwen3ASRDummyInputsBuilder,
 )
 class Qwen3ASRRealtimeGeneration(Qwen3ASRForConditionalGeneration, SupportsRealtime):
-    realtime_max_tokens = 64
+    # Enough headroom for ~10–20 s Chinese speech per VAD segment.
+    realtime_max_tokens: ClassVar[int] = 512
+    #: Each segment must be a fresh request: the streaming-input scheduler
+    #: otherwise prepends the previous assistant completion to the next prompt
+    #: (intended for Voxtral-style continuation), which duplicates transcript
+    #: text and steals the token budget from the current segment.
+    realtime_independent_segments: ClassVar[bool] = True
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
