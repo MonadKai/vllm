@@ -18,10 +18,16 @@ from vllm.entrypoints.openai.realtime.protocol import (
     ErrorEvent,
     InputAudioBufferAppend,
     InputAudioBufferCommit,
+    RealtimeTranscriptionSegment,
     SessionCreated,
     TranscriptionDelta,
     TranscriptionDone,
 )
+from vllm.model_executor.models.qwen3_asr_text import (
+    parse_qwen3_asr_output,
+    split_qwen3_asr_concatenated,
+)
+from vllm.model_executor.models.qwen3_asr_realtime import Qwen3ASRRealtimeGeneration
 from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
@@ -175,21 +181,27 @@ class RealtimeConnection:
         # Create audio stream generator
         audio_stream = self.audio_stream_generator()
         input_stream = asyncio.Queue[list[int]]()
+        segment_metadata: list[dict[str, float]] = []
 
         # Transform to StreamingInput generator
         streaming_input_gen = self.serving.transcribe_realtime(
-            audio_stream, input_stream
+            audio_stream,
+            input_stream,
+            segment_metadata_sink=segment_metadata,
         )
 
         # Start generation task
         self.generation_task = asyncio.create_task(
-            self._run_generation(streaming_input_gen, input_stream)
+            self._run_generation(
+                streaming_input_gen, input_stream, segment_metadata
+            )
         )
 
     async def _run_generation(
         self,
         streaming_input_gen: AsyncGenerator,
         input_stream: asyncio.Queue[list[int]],
+        segment_metadata: list[dict[str, float]],
     ):
         """Run the generation and stream results back to the client.
 
@@ -252,8 +264,39 @@ class RealtimeConnection:
                 total_tokens=prompt_token_ids_len + completion_tokens_len,
             )
 
+            language: str | None = None
+            segments_out: list[RealtimeTranscriptionSegment] | None = None
+            display_text = full_text
+            if issubclass(self.serving.model_cls, Qwen3ASRRealtimeGeneration):
+                language, display_text = parse_qwen3_asr_output(full_text)
+                pairs = split_qwen3_asr_concatenated(full_text)
+                if segment_metadata:
+                    n = min(len(segment_metadata), len(pairs))
+                    segments_out = [
+                        RealtimeTranscriptionSegment(
+                            start=segment_metadata[i]["start_s"],
+                            end=segment_metadata[i]["end_s"],
+                            language=pairs[i][0] or None,
+                            text=pairs[i][1] or None,
+                        )
+                        for i in range(n)
+                    ]
+                    if len(segment_metadata) != len(pairs):
+                        logger.debug(
+                            "VAD segment count %d != parsed text segment count %d",
+                            len(segment_metadata),
+                            len(pairs),
+                        )
+
             # Send final completion event
-            await self.send(TranscriptionDone(text=full_text, usage=usage))
+            await self.send(
+                TranscriptionDone(
+                    text=display_text,
+                    usage=usage,
+                    language=language,
+                    segments=segments_out,
+                )
+            )
 
             # Clear queue for next utterance
             while not self.audio_queue.empty():

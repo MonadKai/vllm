@@ -52,12 +52,33 @@ class TranscriptionDelta(OpenAIBaseModel):
     delta: str  # Incremental text
 
 
+class RealtimeTranscriptionSegment(OpenAIBaseModel):
+    """One ASR segment with optional VAD time range and per-segment fields."""
+
+    start: float
+    """Segment start time in seconds on the input stream timeline."""
+
+    end: float
+    """Segment end time in seconds on the input stream timeline."""
+
+    language: str | None = None
+    """Detected or parsed language for this segment (Qwen3-ASR style output)."""
+
+    text: str | None = None
+    """Transcription text for this segment when it can be split from the model."""
+
+
 class TranscriptionDone(OpenAIBaseModel):
     """Final transcription with usage stats"""
 
     type: Literal["transcription.done"] = "transcription.done"
     text: str  # Complete transcription
     usage: UsageInfo | None = None
+    language: str | None = None
+    """Merged detected language when the model emits Qwen3-ASR metadata."""
+
+    segments: list[RealtimeTranscriptionSegment] | None = None
+    """Per-segment timestamps (from VAD or fixed windows) and optional text/language."""
 
 
 class ErrorEvent(OpenAIBaseModel):
