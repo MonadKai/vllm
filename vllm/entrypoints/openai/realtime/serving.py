@@ -12,7 +12,7 @@ from vllm.engine.protocol import EngineClient, StreamingInput
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.engine.serving import OpenAIServing
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.inputs import PromptType
+from vllm.inputs import EngineInput, PromptType
 from vllm.logger import init_logger
 from vllm.model_executor.models.interfaces import SupportsRealtime
 from vllm.renderers.inputs.preprocess import parse_model_prompt
@@ -94,3 +94,33 @@ class OpenAIServingRealtime(OpenAIServing):
             (engine_input,) = await renderer.render_cmpl_async([parsed_prompt])
 
             yield StreamingInput(prompt=engine_input)
+
+    async def iter_realtime_engine_inputs(
+        self,
+        audio_stream: AsyncGenerator[np.ndarray, None],
+        input_stream: asyncio.Queue[list[int]],
+        *,
+        segment_metadata_sink: list[dict[str, float]] | None = None,
+    ) -> AsyncGenerator[EngineInput, None]:
+        """Like :meth:`transcribe_realtime` but yield plain engine inputs.
+
+        Used when each segment must be a separate ``generate()`` call (no
+        streaming-session prompt carry-over between chunks).
+        """
+        model_config = self.model_config
+        renderer = self.renderer
+
+        stream_input_iter = cast(
+            AsyncGenerator[PromptType, None],
+            self.model_cls.buffer_realtime_audio(
+                audio_stream,
+                input_stream,
+                model_config,
+                segment_metadata_sink=segment_metadata_sink,
+            ),
+        )
+
+        async for prompt in stream_input_iter:
+            parsed_prompt = parse_model_prompt(model_config, prompt)
+            (engine_input,) = await renderer.render_cmpl_async([parsed_prompt])
+            yield engine_input

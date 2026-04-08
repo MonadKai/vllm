@@ -183,19 +183,25 @@ class RealtimeConnection:
         input_stream = asyncio.Queue[list[int]]()
         segment_metadata: list[dict[str, float]] = []
 
-        # Transform to StreamingInput generator
-        streaming_input_gen = self.serving.transcribe_realtime(
-            audio_stream,
-            input_stream,
-            segment_metadata_sink=segment_metadata,
-        )
-
-        # Start generation task
-        self.generation_task = asyncio.create_task(
-            self._run_generation(
-                streaming_input_gen, input_stream, segment_metadata
+        # Start generation task (Qwen3 ASR uses one generate() per VAD segment so
+        # the engine does not prepend prior assistant tokens to the next chunk.)
+        if getattr(self.serving.model_cls, "realtime_independent_segments", False):
+            self.generation_task = asyncio.create_task(
+                self._run_generation_independent_segments(
+                    audio_stream, input_stream, segment_metadata
+                )
             )
-        )
+        else:
+            streaming_input_gen = self.serving.transcribe_realtime(
+                audio_stream,
+                input_stream,
+                segment_metadata_sink=segment_metadata,
+            )
+            self.generation_task = asyncio.create_task(
+                self._run_generation(
+                    streaming_input_gen, input_stream, segment_metadata
+                )
+            )
 
     async def _run_generation(
         self,
@@ -258,44 +264,11 @@ class RealtimeConnection:
                     # finish because websocket connection was killed
                     break
 
-            usage = UsageInfo(
-                prompt_tokens=prompt_token_ids_len,
-                completion_tokens=completion_tokens_len,
-                total_tokens=prompt_token_ids_len + completion_tokens_len,
-            )
-
-            language: str | None = None
-            segments_out: list[RealtimeTranscriptionSegment] | None = None
-            display_text = full_text
-            if issubclass(self.serving.model_cls, Qwen3ASRRealtimeGeneration):
-                language, display_text = parse_qwen3_asr_output(full_text)
-                pairs = split_qwen3_asr_concatenated(full_text)
-                if segment_metadata:
-                    n = min(len(segment_metadata), len(pairs))
-                    segments_out = [
-                        RealtimeTranscriptionSegment(
-                            start=segment_metadata[i]["start_s"],
-                            end=segment_metadata[i]["end_s"],
-                            language=pairs[i][0] or None,
-                            text=pairs[i][1] or None,
-                        )
-                        for i in range(n)
-                    ]
-                    if len(segment_metadata) != len(pairs):
-                        logger.debug(
-                            "VAD segment count %d != parsed text segment count %d",
-                            len(segment_metadata),
-                            len(pairs),
-                        )
-
-            # Send final completion event
-            await self.send(
-                TranscriptionDone(
-                    text=display_text,
-                    usage=usage,
-                    language=language,
-                    segments=segments_out,
-                )
+            await self._send_transcription_done(
+                full_text,
+                prompt_token_ids_len,
+                completion_tokens_len,
+                segment_metadata,
             )
 
             # Clear queue for next utterance
@@ -305,6 +278,116 @@ class RealtimeConnection:
         except Exception as e:
             logger.exception("Error in generation: %s", e)
             await self.send_error(str(e), "processing_error")
+
+    async def _run_generation_independent_segments(
+        self,
+        audio_stream: AsyncGenerator[np.ndarray, None],
+        input_stream: asyncio.Queue[list[int]],
+        segment_metadata: list[dict[str, float]],
+    ) -> None:
+        """One ``generate()`` per audio segment (no streaming-session KV merge)."""
+        request_base = f"rt-{self.connection_id}-{uuid4()}"
+        full_text = ""
+        prompt_token_ids_len = 0
+        completion_tokens_len = 0
+
+        try:
+            from vllm.sampling_params import RequestOutputKind, SamplingParams
+
+            sampling_params = SamplingParams.from_optional(
+                temperature=0.0,
+                max_tokens=self.serving.model_cls.realtime_max_tokens,
+                output_kind=RequestOutputKind.DELTA,
+                skip_clone=True,
+            )
+
+            seg_idx = 0
+            async for engine_input in self.serving.iter_realtime_engine_inputs(
+                audio_stream,
+                input_stream,
+                segment_metadata_sink=segment_metadata,
+            ):
+                request_id = f"{request_base}-seg{seg_idx}"
+                seg_idx += 1
+                result_gen = self.serving.engine_client.generate(
+                    prompt=engine_input,
+                    sampling_params=sampling_params,
+                    request_id=request_id,
+                )
+                first_in_seg = True
+                async for output in result_gen:
+                    if output.outputs and len(output.outputs) > 0:
+                        if first_in_seg and output.prompt_token_ids:
+                            prompt_token_ids_len += len(output.prompt_token_ids)
+                            first_in_seg = False
+
+                        delta = output.outputs[0].text
+                        full_text += delta
+                        completion_tokens_len += len(output.outputs[0].token_ids)
+                        await self.send(TranscriptionDelta(delta=delta))
+
+                    if not self._is_connected:
+                        break
+
+            await self._send_transcription_done(
+                full_text,
+                prompt_token_ids_len,
+                completion_tokens_len,
+                segment_metadata,
+            )
+
+            while not self.audio_queue.empty():
+                self.audio_queue.get_nowait()
+
+        except Exception as e:
+            logger.exception("Error in generation: %s", e)
+            await self.send_error(str(e), "processing_error")
+
+    async def _send_transcription_done(
+        self,
+        full_text: str,
+        prompt_token_ids_len: int,
+        completion_tokens_len: int,
+        segment_metadata: list[dict[str, float]],
+    ) -> None:
+        usage = UsageInfo(
+            prompt_tokens=prompt_token_ids_len,
+            completion_tokens=completion_tokens_len,
+            total_tokens=prompt_token_ids_len + completion_tokens_len,
+        )
+
+        language: str | None = None
+        segments_out: list[RealtimeTranscriptionSegment] | None = None
+        display_text = full_text
+        if issubclass(self.serving.model_cls, Qwen3ASRRealtimeGeneration):
+            language, display_text = parse_qwen3_asr_output(full_text)
+            pairs = split_qwen3_asr_concatenated(full_text)
+            if segment_metadata:
+                n = min(len(segment_metadata), len(pairs))
+                segments_out = [
+                    RealtimeTranscriptionSegment(
+                        start=segment_metadata[i]["start_s"],
+                        end=segment_metadata[i]["end_s"],
+                        language=pairs[i][0] or None,
+                        text=pairs[i][1] or None,
+                    )
+                    for i in range(n)
+                ]
+                if len(segment_metadata) != len(pairs):
+                    logger.debug(
+                        "VAD segment count %d != parsed text segment count %d",
+                        len(segment_metadata),
+                        len(pairs),
+                    )
+
+        await self.send(
+            TranscriptionDone(
+                text=display_text,
+                usage=usage,
+                language=language,
+                segments=segments_out,
+            )
+        )
 
     async def send(
         self, event: SessionCreated | TranscriptionDelta | TranscriptionDone
