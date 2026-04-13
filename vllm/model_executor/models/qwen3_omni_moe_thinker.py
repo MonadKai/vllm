@@ -1741,6 +1741,7 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
                     )
                     for _ in range(self.deepstack_num_level)
                 ]
+                self.has_valid_deepstack_input_embeds = False
 
         with self._mark_language_model(vllm_config):
             self.language_model = Qwen3MoeLLMForCausalLM(
@@ -1761,6 +1762,8 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
     ) -> IntermediateTensors | None:
         if not getattr(self, "deepstack_input_embeds", None):
             return None  # If vision tower is skipped
+        if not getattr(self, "has_valid_deepstack_input_embeds", False):
+            return None
 
         # get deepstack_input_embeds from buffer, and clear the buffer
         return IntermediateTensors(
@@ -1792,6 +1795,7 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
             self.deepstack_input_embeds[idx][:num_tokens].copy_(
                 deepstack_input_embeds[idx]
             )
+        self.has_valid_deepstack_input_embeds = True
 
     def _clear_deepstack_input_embeds(self, num_tokens: int) -> None:
         if not getattr(self, "deepstack_input_embeds", None):
@@ -1801,6 +1805,7 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
         if num_tokens > 0:
             for idx in range(self.deepstack_num_level):
                 self.deepstack_input_embeds[idx][:num_tokens].zero_()
+        self.has_valid_deepstack_input_embeds = False
 
     def _parse_and_validate_multimodal_inputs(self, **kwargs: object) -> dict:
         mm_input_by_modality = {}
@@ -2362,4 +2367,3 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
             connector="visual.merger",
             tower_model=["visual.", "audio_tower."],
         )
-
