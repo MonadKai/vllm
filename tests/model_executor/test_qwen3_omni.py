@@ -218,5 +218,23 @@ def test_qwen3_omni_get_updates_use_audio_in_video(
     )
 
 
+def test_qwen3_omni_thinker_language_only_lora_contract():
+    from vllm.model_executor.models.interfaces import supports_lora
+    from vllm.model_executor.models.qwen3_moe import Qwen3MoeForCausalLM
+    from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+        Qwen3OmniMoeThinkerForConditionalGeneration,
+    )
+
+    assert supports_lora(Qwen3OmniMoeThinkerForConditionalGeneration)
+    assert (
+        Qwen3OmniMoeThinkerForConditionalGeneration.embedding_modules
+        == Qwen3MoeForCausalLM.embedding_modules
+    )
+    assert Qwen3OmniMoeThinkerForConditionalGeneration.lora_skip_prefixes == [
+        "visual.",
+        "audio_tower.",
+    ]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

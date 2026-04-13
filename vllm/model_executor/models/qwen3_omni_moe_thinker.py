@@ -83,6 +83,7 @@ from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from .interfaces import (
     MultiModalEmbeddings,
     SupportsMRoPE,
+    SupportsLoRA,
     SupportsMultiModal,
     SupportsPP,
     SupportsTranscription,
@@ -1652,6 +1653,7 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
     nn.Module,
     SupportsMultiModal,
     SupportsPP,
+    SupportsLoRA,
     SupportsMRoPE,
     Qwen3OmniMoeConditionalGenerationMixin,
     SupportsTranscription,
@@ -1675,6 +1677,10 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
             "up_proj",
         ],
     }
+    # Only language_model LoRA is supported.
+    embedding_modules = Qwen3MoeLLMForCausalLM.embedding_modules
+    # Explicitly skip multimodal tower LoRAs.
+    lora_skip_prefixes = ["visual.", "audio_tower."]
 
     supported_languages = ISO639_1_SUPPORTED_LANGS
 
@@ -2356,3 +2362,4 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
             connector="visual.merger",
             tower_model=["visual.", "audio_tower."],
         )
+
