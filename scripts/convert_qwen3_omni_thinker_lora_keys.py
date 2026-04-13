@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
-Batch rename LoRA tensor keys for Qwen3 Omni Thinker language_model loading.
+Batch convert LoRA tensor keys for Qwen3 Omni Thinker language_model loading.
 
 Typical use case:
 - LoRA was trained against Qwen3MoeForCausalLM and keys look like:
@@ -14,8 +14,18 @@ This script rewrites key prefixes in adapter weight files and copies
 ``adapter_config.json`` from ``--lora-dir`` next to the output adapter file.
 Non-empty ``modules_to_save`` in the config is cleared (vLLM requires it empty).
 
-Tensor keys that do not end with ``.lora_A.weight`` or ``.lora_B.weight`` are treated
-as invalid for this adapter and are omitted from the output after a warning.
+It supports two old-prefix LoRA key layouts and auto-detects the input layout:
+1) fused expert format:
+   base_model.model.model.layers.0.mlp.up_proj.lora_A.weight
+2) per expert format:
+   base_model.model.model.layers.0.mlp.experts.0.up_proj.lora_A.weight
+
+You can explicitly choose the output LoRA layout with ``--target-lora-format``.
+Default output is per expert format.
+
+Tensor keys that do not end with ``.lora_A.weight`` or ``.lora_B.weight`` are
+treated as invalid for this adapter and are omitted from the output after a
+warning.
 
 Supported files:
 - adapter_model.safetensors (default)
@@ -24,25 +34,26 @@ Supported files:
 
 Examples:
     # Preview changes only
-    python scripts/rename_qwen3_omni_thinker_lora_keys.py \
+    python scripts/convert_qwen3_omni_thinker_lora_keys.py \
       --lora-dir /path/to/lora --dry-run
 
     # Default: write beside input as <adapter>.renamed.<ext>
-    python scripts/rename_qwen3_omni_thinker_lora_keys.py \
+    python scripts/convert_qwen3_omni_thinker_lora_keys.py \
       --lora-dir /path/to/lora
 
-    # Write to a directory (default filename: adapter_model.safetensors)
-    python scripts/rename_qwen3_omni_thinker_lora_keys.py \
+    # Force output to fused expert format
+    python scripts/convert_qwen3_omni_thinker_lora_keys.py \
       --lora-dir /path/to/lora \
-      --output-dir /path/to/converted_lora
+      --target-lora-format fused_expert
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import torch
 from safetensors import safe_open
@@ -54,6 +65,37 @@ DEFAULT_OUTPUT_ADAPTER_FILENAME = "adapter_model.safetensors"
 
 # Standard PEFT LoRA weight suffixes; other tensors are warned and skipped.
 LORA_ADAPTER_KEY_SUFFIXES = (".lora_A.weight", ".lora_B.weight")
+
+LORA_FORMAT_FUSED_EXPERT = "fused_expert"
+LORA_FORMAT_PER_EXPERT = "per_expert"
+LORA_FORMAT_CHOICES = (LORA_FORMAT_FUSED_EXPERT, LORA_FORMAT_PER_EXPERT)
+DEFAULT_TARGET_LORA_FORMAT = LORA_FORMAT_PER_EXPERT
+DEFAULT_FUSED_TO_PER_EXPERT_INDEX = 0
+EXPERT_PROJECTION_NAME_PATTERN = r"(?:up_proj|down_proj|gate_proj)"
+
+FUSED_EXPERT_OLD_PREFIX_PATTERN = re.compile(
+    r"^base_model\.model\.model\.layers\.\d+\.mlp\."
+    + EXPERT_PROJECTION_NAME_PATTERN
+    + r"\.lora_[AB]\.weight$"
+)
+PER_EXPERT_OLD_PREFIX_PATTERN = re.compile(
+    r"^base_model\.model\.model\.layers\.\d+\.mlp\.experts\.\d+\."
+    + EXPERT_PROJECTION_NAME_PATTERN
+    + r"\.lora_[AB]\.weight$"
+)
+
+FUSED_TO_PER_REWRITE_PATTERN = re.compile(
+    r"^(?P<head>.*\.layers\.\d+\.mlp\.)"
+    r"(?P<tail>"
+    + EXPERT_PROJECTION_NAME_PATTERN
+    + r"\.lora_[AB]\.weight)$"
+)
+PER_TO_FUSED_REWRITE_PATTERN = re.compile(
+    r"^(?P<head>.*\.layers\.\d+\.mlp\.)experts\.\d+\."
+    r"(?P<tail>"
+    + EXPERT_PROJECTION_NAME_PATTERN
+    + r"\.lora_[AB]\.weight)$"
+)
 
 
 def detect_adapter_file(lora_dir: Path) -> Path:
@@ -127,6 +169,149 @@ def warn_ignored_non_lora_keys(
         print(f"  - {key}")
     if n > limit:
         print(f"  ... and {n - limit} more")
+
+
+def is_fused_expert_old_prefix_lora_key(key: str) -> bool:
+    return bool(FUSED_EXPERT_OLD_PREFIX_PATTERN.match(key))
+
+
+def is_per_expert_old_prefix_lora_key(key: str) -> bool:
+    return bool(PER_EXPERT_OLD_PREFIX_PATTERN.match(key))
+
+
+def detect_old_prefix_lora_format(keys: Iterable[str]) -> str:
+    fused_match_count = 0
+    per_expert_match_count = 0
+    for key in keys:
+        if is_fused_expert_old_prefix_lora_key(key):
+            fused_match_count += 1
+        if is_per_expert_old_prefix_lora_key(key):
+            per_expert_match_count += 1
+
+    if fused_match_count > 0 and per_expert_match_count == 0:
+        return LORA_FORMAT_FUSED_EXPERT
+    if per_expert_match_count > 0 and fused_match_count == 0:
+        return LORA_FORMAT_PER_EXPERT
+    if fused_match_count == 0 and per_expert_match_count == 0:
+        raise ValueError(
+            "Unable to detect old-prefix LoRA format from adapter keys. "
+            "No keys matched fused-expert or per-expert patterns."
+        )
+
+    raise ValueError(
+        "Ambiguous old-prefix LoRA format: both fused-expert and per-expert "
+        "patterns were detected in the same adapter."
+    )
+
+
+def convert_single_lora_key_format(
+    key: str,
+    *,
+    source_format: str,
+    target_format: str,
+    fused_to_per_expert_index: int,
+) -> str:
+    if source_format == target_format:
+        return key
+
+    if source_format == LORA_FORMAT_FUSED_EXPERT and target_format == LORA_FORMAT_PER_EXPERT:
+        match = FUSED_TO_PER_REWRITE_PATTERN.match(key)
+        if not match:
+            return key
+        return (
+            f"{match.group('head')}experts.{fused_to_per_expert_index}."
+            f"{match.group('tail')}"
+        )
+
+    if source_format == LORA_FORMAT_PER_EXPERT and target_format == LORA_FORMAT_FUSED_EXPERT:
+        match = PER_TO_FUSED_REWRITE_PATTERN.match(key)
+        if not match:
+            return key
+        return f"{match.group('head')}{match.group('tail')}"
+
+    raise ValueError(
+        f"Unsupported LoRA format conversion: {source_format} -> {target_format}"
+    )
+
+
+def convert_lora_key_format(
+    tensors: dict[str, torch.Tensor],
+    *,
+    source_format: str,
+    target_format: str,
+    fused_to_per_expert_index: int,
+) -> tuple[dict[str, torch.Tensor], list[tuple[str, str]]]:
+    converted: dict[str, torch.Tensor] = {}
+    changed_pairs: list[tuple[str, str]] = []
+
+    if source_format == LORA_FORMAT_FUSED_EXPERT and target_format == LORA_FORMAT_PER_EXPERT:
+        detected_expert_count: int | None = None
+        for key, value in tensors.items():
+            match = FUSED_TO_PER_REWRITE_PATTERN.match(key)
+            if not match:
+                if key in converted:
+                    raise ValueError(
+                        "Key collision after LoRA format conversion: "
+                        f"'{key}' already exists."
+                    )
+                converted[key] = value
+                continue
+
+            if value.ndim < 3:
+                raise ValueError(
+                    "Cannot split fused-expert tensor to per-expert layout: "
+                    f"'{key}' has shape {tuple(value.shape)}. "
+                    "Expected expert dimension at axis 0 (ndim >= 3)."
+                )
+
+            current_expert_count = int(value.shape[0])
+            if current_expert_count <= 0:
+                raise ValueError(
+                    "Invalid fused-expert tensor with non-positive expert count: "
+                    f"'{key}' has shape {tuple(value.shape)}."
+                )
+            if detected_expert_count is None:
+                detected_expert_count = current_expert_count
+            elif detected_expert_count != current_expert_count:
+                raise ValueError(
+                    "Inconsistent expert dimension across fused-expert tensors: "
+                    f"expected {detected_expert_count}, got {current_expert_count} "
+                    f"for key '{key}'."
+                )
+
+            for expert_index in range(current_expert_count):
+                new_key = (
+                    f"{match.group('head')}experts.{expert_index}.{match.group('tail')}"
+                )
+                if new_key in converted:
+                    raise ValueError(
+                        "Key collision after LoRA format conversion: "
+                        f"'{key}' -> '{new_key}', but '{new_key}' already exists."
+                    )
+                converted[new_key] = value[expert_index].contiguous()
+                changed_pairs.append((key, new_key))
+
+        return converted, changed_pairs
+
+    for key, value in tensors.items():
+        new_key = convert_single_lora_key_format(
+            key,
+            source_format=source_format,
+            target_format=target_format,
+            fused_to_per_expert_index=fused_to_per_expert_index,
+        )
+        if new_key in converted:
+            raise ValueError(
+                "Key collision after LoRA format conversion: "
+                f"'{key}' -> '{new_key}', but '{new_key}' already exists. "
+                "This typically means multiple per-expert keys collapse into one "
+                "fused key."
+            )
+        converted[new_key] = value
+        if key != new_key:
+            changed_pairs.append((key, new_key))
+
+    return converted, changed_pairs
 
 
 def save_tensors(
@@ -226,7 +411,7 @@ def copy_adapter_config_for_output(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Rename Qwen3 LoRA tensor prefixes for Omni Thinker language_model.",
+        description="Convert Qwen3 LoRA tensor keys for Omni Thinker language_model.",
     )
     parser.add_argument(
         "--lora-dir",
@@ -263,6 +448,25 @@ def parse_args() -> argparse.Namespace:
         help="Replacement key prefix.",
     )
     parser.add_argument(
+        "--target-lora-format",
+        type=str,
+        choices=LORA_FORMAT_CHOICES,
+        default=DEFAULT_TARGET_LORA_FORMAT,
+        help=(
+            "Output LoRA key layout. Input layout is auto-detected from --lora-dir. "
+            f"Default: {DEFAULT_TARGET_LORA_FORMAT}."
+        ),
+    )
+    parser.add_argument(
+        "--fused-to-per-expert-index",
+        type=int,
+        default=DEFAULT_FUSED_TO_PER_EXPERT_INDEX,
+        help=(
+            "Expert index inserted when converting fused_expert -> per_expert. "
+            f"Default: {DEFAULT_FUSED_TO_PER_EXPERT_INDEX}."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview key changes without writing files.",
@@ -291,6 +495,9 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
 
 def main() -> None:
     args = parse_args()
+    if args.fused_to_per_expert_index < 0:
+        raise ValueError("--fused-to-per-expert-index must be >= 0")
+
     input_path, output_path = resolve_paths(args)
 
     tensors, metadata = load_tensors(input_path)
@@ -305,7 +512,16 @@ def main() -> None:
             f"{LORA_ADAPTER_KEY_SUFFIXES[0]!r} or {LORA_ADAPTER_KEY_SUFFIXES[1]!r}."
         )
 
-    renamed, changed_pairs = rename_keys(tensors, args.old_prefix, args.new_prefix)
+    detected_lora_format = detect_old_prefix_lora_format(tensors.keys())
+    format_converted, format_changed_pairs = convert_lora_key_format(
+        tensors,
+        source_format=detected_lora_format,
+        target_format=args.target_lora_format,
+        fused_to_per_expert_index=args.fused_to_per_expert_index,
+    )
+    renamed, prefix_changed_pairs = rename_keys(
+        format_converted, args.old_prefix, args.new_prefix
+    )
 
     print(f"Input file: {input_path}")
     print(f"Output file: {output_path}")
@@ -318,17 +534,28 @@ def main() -> None:
     else:
         print(f"LoRA tensors: {len(tensors)}")
     warn_ignored_non_lora_keys(dropped_keys, show_limit=args.show_limit)
-    print(f"Renamed keys: {len(changed_pairs)}")
+    print(f"Detected old-prefix LoRA format: {detected_lora_format}")
+    print(f"Target LoRA format: {args.target_lora_format}")
+    print(f"Converted keys by format: {len(format_changed_pairs)}")
+    print(f"Renamed keys by prefix: {len(prefix_changed_pairs)}")
 
-    if changed_pairs:
-        print("\nSample key changes:")
-        for old_key, new_key in changed_pairs[: max(args.show_limit, 0)]:
+    if format_changed_pairs:
+        print("\nSample LoRA format key changes:")
+        for old_key, new_key in format_changed_pairs[: max(args.show_limit, 0)]:
             print(f"- {old_key} -> {new_key}")
-        if len(changed_pairs) > args.show_limit:
-            hidden_count = len(changed_pairs) - args.show_limit
+        if len(format_changed_pairs) > args.show_limit:
+            hidden_count = len(format_changed_pairs) - args.show_limit
             print(f"... and {hidden_count} more")
-    else:
-        print("No keys matched the provided --old-prefix.")
+
+    if prefix_changed_pairs:
+        print("\nSample prefix key changes:")
+        for old_key, new_key in prefix_changed_pairs[: max(args.show_limit, 0)]:
+            print(f"- {old_key} -> {new_key}")
+        if len(prefix_changed_pairs) > args.show_limit:
+            hidden_count = len(prefix_changed_pairs) - args.show_limit
+            print(f"... and {hidden_count} more")
+    elif not format_changed_pairs:
+        print("No keys matched requested format conversion or --old-prefix.")
 
     if args.dry_run:
         print("\nDry-run enabled; no file written.")
@@ -343,4 +570,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
