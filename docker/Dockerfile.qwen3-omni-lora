@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+#
+# Qwen3-Omni Thinker language-model LoRA patch image (branch feat/v0.19.0-qwen3-omni-lora).
+#
+# Applies a unified diff onto the vLLM package already installed in the base image
+# (default: /usr/local/lib/python3.12/dist-packages). No pip rebuild — fast image builds.
+#
+# Regenerate ``docker/patches/qwen3-omni-lora.patch`` after editing files under ``vllm/``
+# (use the same git tag as your base image, e.g. v0.19.0):
+#
+#   git diff v0.19.0..HEAD -- vllm/ > docker/patches/qwen3-omni-lora.patch
+#
+# Build from repository root (patch file must exist):
+#
+#   docker build -f docker/Dockerfile.qwen3-omni-lora -t vllm-openai:qwen3-omni-lora .
+#
+# Override base image or site-packages parent (directory that contains the ``vllm`` package):
+#
+#   docker build -f docker/Dockerfile.qwen3-omni-lora \
+#     --build-arg BASE_IMAGE=docker.m.daocloud.io/vllm/vllm-openai:v0.19.0 \
+#     --build-arg VLLM_DIST_PACKAGES=/usr/local/lib/python3.12/dist-packages \
+#     -t vllm-openai:qwen3-omni-lora .
+
+ARG BASE_IMAGE=docker.m.daocloud.io/vllm/vllm-openai:v0.19.0
+
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE
+# Parent of the installed ``vllm`` package (i.e. .../dist-packages, not .../dist-packages/vllm).
+ARG VLLM_DIST_PACKAGES=/usr/local/lib/python3.12/dist-packages
+
+LABEL org.opencontainers.image.base.name="${BASE_IMAGE}"
+LABEL org.opencontainers.image.description="vLLM OpenAI server with Qwen3-Omni LoRA patches (unified diff)"
+
+COPY docker/patches/qwen3-omni-lora.patch /tmp/vllm-qwen3-omni-lora.patch
+
+# ``patch`` is not always present in slim images; install only when missing.
+RUN set -eux; \
+    if ! command -v patch >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends patch \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    patch -d "${VLLM_DIST_PACKAGES}" -p1 < /tmp/vllm-qwen3-omni-lora.patch; \
+    rm -f /tmp/vllm-qwen3-omni-lora.patch
+
+# Same as upstream ``vllm-openai`` (docker/Dockerfile ``vllm-openai`` target).
+ENTRYPOINT ["vllm", "serve"]
