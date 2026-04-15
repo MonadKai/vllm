@@ -10,9 +10,12 @@ Typical use case:
 - Qwen3OmniMoeThinkerForConditionalGeneration expects language model keys like:
     base_model.model.language_model.model.layers.0....
 
-This script rewrites key prefixes in adapter weight files and copies
-``adapter_config.json`` from ``--lora-dir`` next to the output adapter file.
-Non-empty ``modules_to_save`` in the config is cleared (vLLM requires it empty).
+This script rewrites key prefixes in adapter weight files and writes the
+standardised output (always ``adapter_model.safetensors``) together with a
+normalised ``adapter_config.json`` into the **required** ``--output-dir``.
+``--output-dir`` must differ from ``--lora-dir`` to prevent accidental
+overwrites.  Non-empty ``modules_to_save`` in the config is cleared (vLLM
+requires it empty).
 
 It supports two old-prefix LoRA key layouts and auto-detects the input layout:
 1) fused expert format:
@@ -27,23 +30,25 @@ Tensor keys that do not end with ``.lora_A.weight`` or ``.lora_B.weight`` are
 treated as invalid for this adapter and are omitted from the output after a
 warning.
 
-Supported files:
-- adapter_model.safetensors (default)
+Supported input files:
+- adapter_model.safetensors (preferred)
 - adapter_model.bin
 - adapter_model.pt
+
+Output is always ``adapter_model.safetensors`` (safetensors format).
 
 Examples:
     # Preview changes only
     python scripts/convert_qwen3_omni_thinker_lora_keys.py \
-      --lora-dir /path/to/lora --dry-run
+      --lora-dir /path/to/lora --output-dir /path/to/output --dry-run
 
-    # Default: write beside input as <adapter>.renamed.<ext>
+    # Convert with auto-detected prefix and default per_expert format
     python scripts/convert_qwen3_omni_thinker_lora_keys.py \
-      --lora-dir /path/to/lora
+      --lora-dir /path/to/lora --output-dir /path/to/output
 
     # Force output to fused expert format
     python scripts/convert_qwen3_omni_thinker_lora_keys.py \
-      --lora-dir /path/to/lora \
+      --lora-dir /path/to/lora --output-dir /path/to/output \
       --target-lora-format fused_expert
 """
 
@@ -57,7 +62,6 @@ from typing import Any, Iterable
 
 import torch
 from safetensors import safe_open
-from safetensors.torch import load_file as safetensors_load_file
 from safetensors.torch import save_file as safetensors_save_file
 
 # Default output weights filename when using --output-dir (always safetensors).
@@ -72,14 +76,26 @@ LORA_FORMAT_CHOICES = (LORA_FORMAT_FUSED_EXPERT, LORA_FORMAT_PER_EXPERT)
 DEFAULT_TARGET_LORA_FORMAT = LORA_FORMAT_PER_EXPERT
 DEFAULT_FUSED_TO_PER_EXPERT_INDEX = 0
 EXPERT_PROJECTION_NAME_PATTERN = r"(?:up_proj|down_proj|gate_proj)"
+SUPPORTED_LORA_PREFIXES = (
+    # qwen3_moe peft layout
+    "base_model.model.model.",
+    # default vllm layout
+    "base_model.model.language_model.model.",
+    # ms-swift qwen3_omni peft layout
+    "base_model.model.thinker.model.",
+)
+LORA_PREFIX_PATTERN = (
+    r"base_model\.model\."
+    r"(?:model|language_model\.model|thinker\.model)\."
+)
 
 FUSED_EXPERT_OLD_PREFIX_PATTERN = re.compile(
-    r"^base_model\.model\.model\.layers\.\d+\.mlp\."
+    r"^" + LORA_PREFIX_PATTERN + r"layers\.\d+\.mlp\."
     + EXPERT_PROJECTION_NAME_PATTERN
     + r"\.lora_[AB]\.weight$"
 )
 PER_EXPERT_OLD_PREFIX_PATTERN = re.compile(
-    r"^base_model\.model\.model\.layers\.\d+\.mlp\.experts\.\d+\."
+    r"^" + LORA_PREFIX_PATTERN + r"layers\.\d+\.mlp\.experts\.\d+\."
     + EXPERT_PROJECTION_NAME_PATTERN
     + r"\.lora_[AB]\.weight$"
 )
@@ -117,10 +133,13 @@ def detect_adapter_file(lora_dir: Path) -> Path:
 def load_tensors(input_path: Path) -> tuple[dict[str, torch.Tensor], dict[str, str] | None]:
     suffix = input_path.suffix
     if suffix == ".safetensors":
+        tensors: dict[str, torch.Tensor] = {}
         metadata: dict[str, str] | None = None
         with safe_open(str(input_path), framework="pt") as reader:
             metadata = reader.metadata()
-        tensors = safetensors_load_file(str(input_path))
+            tensor_keys = reader.keys()
+            for key in tensor_keys:
+                tensors[key] = reader.get_tensor(key)
         return tensors, metadata
 
     if suffix in {".bin", ".pt"}:
@@ -171,6 +190,58 @@ def warn_ignored_non_lora_keys(
         print(f"  ... and {n - limit} more")
 
 
+def print_lora_tensor_prefixes(
+    raw_keys: Iterable[str],
+    *,
+    layer_index: int = 0,
+    show_limit: int,
+) -> None:
+    """Print unique raw tensor prefixes for a given layer (prefer LoRA keys)."""
+    layer_tag = f".layers.{layer_index}."
+    lora_prefixes: list[str] = []
+    seen_prefixes: set[str] = set()
+    non_lora_prefixes: list[str] = []
+    seen_non_lora: set[str] = set()
+
+    for key in raw_keys:
+        if layer_tag not in key:
+            continue
+        if key.endswith(LORA_ADAPTER_KEY_SUFFIXES):
+            prefix = re.sub(r"\.lora_[AB]\.weight$", "", key)
+            if prefix not in seen_prefixes:
+                seen_prefixes.add(prefix)
+                lora_prefixes.append(prefix)
+            continue
+
+        non_lora_prefix = key.rsplit(".", 1)[0] if "." in key else key
+        if non_lora_prefix not in seen_non_lora:
+            seen_non_lora.add(non_lora_prefix)
+            non_lora_prefixes.append(non_lora_prefix)
+
+    print(f"\nRaw LoRA tensor prefixes (layer {layer_index}):")
+    limit = max(show_limit, 0)
+    if lora_prefixes:
+        for prefix in lora_prefixes[:limit]:
+            print(f"  - {prefix}")
+        if len(lora_prefixes) > limit:
+            print(f"  ... and {len(lora_prefixes) - limit} more")
+        return
+
+    print(f"  (no layer {layer_index} LoRA tensor prefixes found)")
+    if not non_lora_prefixes:
+        print(
+            f"  (no layer {layer_index} tensor prefixes "
+            "found in raw checkpoint)"
+        )
+        return
+
+    print(f"  Raw non-LoRA tensor prefixes (layer {layer_index}):")
+    for prefix in non_lora_prefixes[:limit]:
+        print(f"    - {prefix}")
+    if len(non_lora_prefixes) > limit:
+        print(f"    ... and {len(non_lora_prefixes) - limit} more")
+
+
 def is_fused_expert_old_prefix_lora_key(key: str) -> bool:
     return bool(FUSED_EXPERT_OLD_PREFIX_PATTERN.match(key))
 
@@ -193,15 +264,59 @@ def detect_old_prefix_lora_format(keys: Iterable[str]) -> str:
     if per_expert_match_count > 0 and fused_match_count == 0:
         return LORA_FORMAT_PER_EXPERT
     if fused_match_count == 0 and per_expert_match_count == 0:
+        supported_prefix_text = ", ".join(
+            repr(prefix) for prefix in SUPPORTED_LORA_PREFIXES
+        )
         raise ValueError(
-            "Unable to detect old-prefix LoRA format from adapter keys. "
-            "No keys matched fused-expert or per-expert patterns."
+            "Unable to detect LoRA format from adapter keys. "
+            "No keys matched fused-expert or per-expert patterns "
+            f"under supported prefixes {supported_prefix_text}."
         )
 
     raise ValueError(
         "Ambiguous old-prefix LoRA format: both fused-expert and per-expert "
         "patterns were detected in the same adapter."
     )
+
+
+def infer_old_prefix(
+    keys: Iterable[str],
+    supported_prefixes: tuple[str, ...] = SUPPORTED_LORA_PREFIXES,
+) -> str:
+    """Auto-detect the common key prefix from LoRA adapter keys.
+
+    Examines each key to determine which of the ``supported_prefixes`` it
+    starts with, then returns the unique matched prefix.  Raises if no keys
+    match or if multiple distinct prefixes are detected.
+    """
+    prefix_counts: dict[str, int] = {p: 0 for p in supported_prefixes}
+    unmatched = 0
+
+    for key in keys:
+        for prefix in supported_prefixes:
+            if key.startswith(prefix):
+                prefix_counts[prefix] += 1
+                break
+        else:
+            unmatched += 1
+
+    found = {p: c for p, c in prefix_counts.items() if c > 0}
+
+    if not found:
+        supported_text = ", ".join(repr(p) for p in supported_prefixes)
+        raise ValueError(
+            "Unable to auto-detect --old-prefix from adapter keys. "
+            f"No LoRA keys matched any supported prefix: {supported_text}."
+        )
+
+    if len(found) > 1:
+        detail = ", ".join(f"{p!r}: {c} keys" for p, c in found.items())
+        raise ValueError(
+            f"Ambiguous key prefixes detected ({detail}). "
+            "Please specify --old-prefix explicitly."
+        )
+
+    return next(iter(found))
 
 
 def convert_single_lora_key_format(
@@ -319,14 +434,7 @@ def save_tensors(
     tensors: dict[str, torch.Tensor],
     metadata: dict[str, str] | None,
 ) -> None:
-    suffix = output_path.suffix
-    if suffix == ".safetensors":
-        safetensors_save_file(tensors, str(output_path), metadata=metadata)
-        return
-    if suffix in {".bin", ".pt"}:
-        torch.save(tensors, str(output_path))
-        return
-    raise ValueError(f"Unsupported output file type: {output_path.name}")
+    safetensors_save_file(tensors, str(output_path), metadata=metadata)
 
 
 def rename_keys(
@@ -428,18 +536,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
+        required=True,
         help=(
             "Directory for converted weights "
             f"({DEFAULT_OUTPUT_ADAPTER_FILENAME}) and adapter_config.json. "
-            "If omitted, write to '<input>.renamed<suffix>' next to the input file."
+            "Must differ from --lora-dir."
         ),
     )
     parser.add_argument(
         "--old-prefix",
         type=str,
-        default="base_model.model.model.",
-        help="Key prefix to replace.",
+        default=None,
+        help=(
+            "Key prefix to replace. If omitted, auto-detected from adapter "
+            "keys. Supported prefixes: "
+            + ", ".join(repr(p) for p in SUPPORTED_LORA_PREFIXES)
+            + "."
+        ),
     )
     parser.add_argument(
         "--new-prefix",
@@ -467,6 +580,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--inspect-layer",
+        type=int,
+        default=0,
+        help=(
+            "Layer index whose raw tensor prefixes are "
+            "printed for inspection. Default: 0."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview key changes without writing files.",
@@ -485,12 +607,13 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     if not input_path.exists():
         raise FileNotFoundError(f"Input adapter file not found: {input_path}")
 
-    if args.output_dir is not None:
-        return input_path, args.output_dir / DEFAULT_OUTPUT_ADAPTER_FILENAME
+    if args.output_dir.resolve() == args.lora_dir.resolve():
+        raise ValueError(
+            "--output-dir must differ from --lora-dir to avoid "
+            "overwriting the original adapter files."
+        )
 
-    return input_path, input_path.with_name(
-        f"{input_path.stem}.renamed{input_path.suffix}"
-    )
+    return input_path, args.output_dir / DEFAULT_OUTPUT_ADAPTER_FILENAME
 
 
 def main() -> None:
@@ -500,9 +623,15 @@ def main() -> None:
 
     input_path, output_path = resolve_paths(args)
 
-    tensors, metadata = load_tensors(input_path)
-    total_keys = len(tensors)
-    tensors, dropped_keys = partition_lora_adapter_tensors(tensors)
+    raw_tensors, metadata = load_tensors(input_path)
+    total_keys = len(raw_tensors)
+    print_lora_tensor_prefixes(
+        raw_tensors.keys(),
+        layer_index=args.inspect_layer,
+        show_limit=args.show_limit,
+    )
+
+    tensors, dropped_keys = partition_lora_adapter_tensors(raw_tensors)
 
     if not tensors:
         if total_keys == 0:
@@ -510,6 +639,19 @@ def main() -> None:
         raise ValueError(
             "All tensors were ignored: none end with "
             f"{LORA_ADAPTER_KEY_SUFFIXES[0]!r} or {LORA_ADAPTER_KEY_SUFFIXES[1]!r}."
+        )
+
+    if args.old_prefix is None:
+        old_prefix = infer_old_prefix(tensors.keys())
+        print(f"Auto-detected --old-prefix: {old_prefix!r}")
+    else:
+        old_prefix = args.old_prefix
+        print(f"Using user-specified --old-prefix: {old_prefix!r}")
+
+    if old_prefix == args.new_prefix:
+        print(
+            f"Note: --old-prefix {old_prefix!r} equals --new-prefix; "
+            "prefix rename step will be a no-op."
         )
 
     detected_lora_format = detect_old_prefix_lora_format(tensors.keys())
@@ -520,7 +662,7 @@ def main() -> None:
         fused_to_per_expert_index=args.fused_to_per_expert_index,
     )
     renamed, prefix_changed_pairs = rename_keys(
-        format_converted, args.old_prefix, args.new_prefix
+        format_converted, old_prefix, args.new_prefix
     )
 
     print(f"Input file: {input_path}")
