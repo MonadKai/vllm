@@ -218,5 +218,44 @@ def test_qwen3_omni_get_updates_use_audio_in_video(
     )
 
 
+def test_qwen3_omni_thinker_language_only_lora_contract():
+    from vllm.model_executor.models.interfaces import supports_lora
+    from vllm.model_executor.models.qwen3_moe import Qwen3MoeForCausalLM
+    from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+        Qwen3OmniMoeThinkerForConditionalGeneration,
+    )
+
+    assert supports_lora(Qwen3OmniMoeThinkerForConditionalGeneration)
+    assert (
+        Qwen3OmniMoeThinkerForConditionalGeneration.embedding_modules
+        == Qwen3MoeForCausalLM.embedding_modules
+    )
+    assert Qwen3OmniMoeThinkerForConditionalGeneration.lora_skip_prefixes == [
+        "visual.",
+        "audio_tower.",
+    ]
+
+
+def test_qwen3_omni_thinker_hf_to_vllm_mapper_language_model_prefixes():
+    from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+        Qwen3OmniMoeThinkerForConditionalGeneration,
+    )
+
+    mapper = Qwen3OmniMoeThinkerForConditionalGeneration.hf_to_vllm_mapper
+    mapped = mapper.apply_list(
+        [
+            "thinker.model.layers.0.mlp.experts.0.up_proj.lora_A.weight",
+            "thinker.lm_head.weight",
+            "thinker.visual.blocks.0.attn.qkv.weight",
+        ]
+    )
+
+    assert mapped == [
+        "language_model.model.layers.0.mlp.experts.0.up_proj.lora_A.weight",
+        "language_model.lm_head.weight",
+        "visual.blocks.0.attn.qkv.weight",
+    ]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
