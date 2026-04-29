@@ -44,5 +44,8 @@ RUN set -eux; \
     patch -d "${VLLM_DIST_PACKAGES}" -p1 < /tmp/vllm-qwen3-omni-lora.patch; \
     rm -f /tmp/vllm-qwen3-omni-lora.patch
 
+# Add optional audio dependencies
+RUN pip install librosa av resampy scipy soundfile mistral_common[audio] -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 # Same as upstream ``vllm-openai`` (docker/Dockerfile ``vllm-openai`` target).
 ENTRYPOINT ["vllm", "serve"]
