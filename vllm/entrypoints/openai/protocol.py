@@ -1371,6 +1371,10 @@ class SimilarityRequest(OpenAIBaseModel):
     dimensions: Optional[int] = None
     user: Optional[str] = None
     truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None
+    long_text_strategy: Literal["error", "truncate", "mean_pooling"] = \
+        "mean_pooling"
+    chunk_size: Optional[Annotated[int, Field(ge=1)]] = None
+    chunk_overlap: Annotated[int, Field(ge=0)] = 64
 
     # doc: begin-embedding-pooling-params
     additional_data: Optional[Any] = None
@@ -1395,13 +1399,14 @@ class SimilarityRequest(OpenAIBaseModel):
     def validate_single_text(cls, text: str):
         if not text:
             raise ValueError('text_1 and text_2 must be non-empty strings')
-        """确保每个文本字段是单个字符串，不是列表"""
+        # Ensure each text field is a single string, not a list.
         if isinstance(text, list):
-            # 如果是单元素列表，可以自动转换为字符串
             if len(text) == 1 and isinstance(text[0], str):
                 return text[0]
-            raise ValueError('text_1 and text_2 must be single strings, not lists')
+            raise ValueError(
+                'text_1 and text_2 must be single strings, not lists')
         return text
+
 
 class SimilarityResponse(OpenAIBaseModel):
     id: str = Field(default_factory=lambda: f"sim-{random_uuid()}")

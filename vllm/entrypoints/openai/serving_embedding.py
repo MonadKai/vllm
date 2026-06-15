@@ -15,12 +15,14 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import ChatTemplateContentFormatOption
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.protocol import (EmbeddingChatRequest,
+                                              EmbeddingCompletionRequest,
                                               EmbeddingRequest,
                                               EmbeddingResponse,
-                                              SimilarityResponse,
-                                              EmbeddingCompletionRequest,
                                               EmbeddingResponseData,
-                                              ErrorResponse, UsageInfo)
+                                              ErrorResponse,
+                                              SimilarityRequest,
+                                              SimilarityResponse,
+                                              UsageInfo)
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.entrypoints.openai.serving_models import OpenAIServingModels
 from vllm.logger import init_logger
@@ -29,6 +31,51 @@ from vllm.outputs import (EmbeddingOutput, EmbeddingRequestOutput,
 from vllm.utils import merge_async_iterators
 
 logger = init_logger(__name__)
+
+
+def _chunk_token_ids(
+    token_ids: list[int],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[list[int]]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than 0")
+    if chunk_overlap < 0:
+        raise ValueError("chunk_overlap must be greater than or equal to 0")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+    chunks: list[list[int]] = []
+    step = chunk_size - chunk_overlap
+    for start in range(0, len(token_ids), step):
+        chunk = token_ids[start:start + chunk_size]
+        if chunk:
+            chunks.append(chunk)
+        if start + chunk_size >= len(token_ids):
+            break
+    return chunks
+
+
+def _pool_chunk_embeddings(
+    embeddings: list[list[float]],
+    token_counts: list[int],
+) -> list[float]:
+    if len(embeddings) != len(token_counts):
+        raise ValueError("embeddings and token_counts must have the same size")
+    if not embeddings:
+        raise ValueError("embeddings must not be empty")
+
+    weights = np.array(token_counts, dtype="float32")
+    if np.any(weights <= 0):
+        raise ValueError("token_counts must be positive")
+
+    pooled = np.average(np.array(embeddings, dtype="float32"),
+                        axis=0,
+                        weights=weights)
+    norm = np.linalg.norm(pooled)
+    if norm == 0:
+        return pooled.tolist()
+    return (pooled / norm).tolist()
 
 
 def _get_embedding(
@@ -247,20 +294,133 @@ class OpenAIServingEmbedding(OpenAIServing):
         )
 
     async def create_similarity(
-        self, request: EmbeddingRequest, raw_request: Request
-    ) -> Union[SimilarityResponse, ErrorResponse]:
-        request_openai = self._convert_to_openai_embedding_request(request)
+            self, request: SimilarityRequest,
+            raw_request: Request) -> Union[SimilarityResponse, ErrorResponse]:
+        if request.long_text_strategy == "mean_pooling":
+            chunked_response = await self._try_create_chunked_similarity(
+                request, raw_request)
+            if chunked_response is not None:
+                return chunked_response
 
-        response_openai = await self.create_embedding(
-            request_openai, raw_request
-        )
+        request_openai = self._convert_to_openai_embedding_request(request)
+        if request.long_text_strategy == "truncate" and \
+                request_openai.truncate_prompt_tokens is None:
+            request_openai.truncate_prompt_tokens = self.max_model_len
+
+        response_openai = await self.create_embedding(request_openai,
+                                                      raw_request)
         if isinstance(response_openai, ErrorResponse):
             return response_openai
-        similarity_respone = self._convert_to_similarity_response(response_openai)
-        similarity_score = self._cosine_similarity_0_1(similarity_respone[0], similarity_respone[1])
+        similarity_response = self._convert_to_similarity_response(
+            response_openai)
+        similarity_score = self._cosine_similarity_0_1(
+            similarity_response[0], similarity_response[1])
         return SimilarityResponse(data=[float(similarity_score)],
                                   model=request_openai.model,
                                   usage=response_openai.usage)
+
+    async def _try_create_chunked_similarity(
+            self, request: SimilarityRequest,
+            raw_request: Request
+    ) -> Optional[Union[SimilarityResponse, ErrorResponse]]:
+        error_check_ret = await self._check_model(request)
+        if error_check_ret is not None:
+            return error_check_ret
+
+        try:
+            lora_request, _ = self._maybe_get_adapters(request)
+            tokenizer = await self.engine_client.get_tokenizer(lora_request)
+            text_token_ids = [
+                self._tokenize_similarity_text(tokenizer, request.text_1,
+                                               request.add_special_tokens),
+                self._tokenize_similarity_text(tokenizer, request.text_2,
+                                               request.add_special_tokens),
+            ]
+            special_tokens = self._num_similarity_special_tokens(
+                tokenizer, request.add_special_tokens)
+            body_token_limit = self.max_model_len - special_tokens
+            if body_token_limit <= 0:
+                return self.create_error_response(
+                    "max_model_len is too small for special tokens.")
+
+            if all(len(token_ids) + special_tokens <= self.max_model_len
+                   for token_ids in text_token_ids):
+                return None
+
+            chunk_size = request.chunk_size or min(480, body_token_limit)
+            chunk_size = min(chunk_size, body_token_limit)
+            chunk_overlap = min(request.chunk_overlap, chunk_size - 1)
+
+            chunk_inputs: list[list[int]] = []
+            chunk_token_counts: list[list[int]] = []
+            for token_ids in text_token_ids:
+                chunks = _chunk_token_ids(token_ids, chunk_size,
+                                          chunk_overlap)
+                if not chunks:
+                    chunks = [[]]
+                chunk_token_counts.append(
+                    [max(len(chunk), 1) for chunk in chunks])
+                chunk_inputs.extend(
+                    self._add_similarity_special_tokens(
+                        tokenizer, chunk, request.add_special_tokens)
+                    for chunk in chunks)
+        except (TypeError, ValueError) as e:
+            return self.create_error_response(str(e))
+
+        embedding_request = EmbeddingCompletionRequest(
+            model=self._get_model_name(request.model),
+            input=chunk_inputs,
+            encoding_format="float",
+            dimensions=request.dimensions,
+            user=request.user,
+            truncate_prompt_tokens=None,
+            add_special_tokens=False,
+            priority=request.priority,
+        )
+        response_openai = await self.create_embedding(embedding_request,
+                                                      raw_request)
+        if isinstance(response_openai, ErrorResponse):
+            return response_openai
+
+        embeddings = self._convert_to_similarity_response(response_openai)
+        first_count = len(chunk_token_counts[0])
+        pooled_1 = _pool_chunk_embeddings(embeddings[:first_count],
+                                          chunk_token_counts[0])
+        pooled_2 = _pool_chunk_embeddings(embeddings[first_count:],
+                                          chunk_token_counts[1])
+        similarity_score = self._cosine_similarity_0_1(pooled_1, pooled_2)
+        return SimilarityResponse(data=[float(similarity_score)],
+                                  model=embedding_request.model,
+                                  usage=response_openai.usage)
+
+    def _tokenize_similarity_text(self, tokenizer, text: str,
+                                  add_special_tokens: bool) -> list[int]:
+        if (self.model_config.encoder_config is not None
+                and self.model_config.encoder_config.get(
+                    "do_lower_case", False)):
+            text = text.lower()
+        return tokenizer(text, add_special_tokens=False).input_ids
+
+    def _num_similarity_special_tokens(
+            self,
+            tokenizer,
+            add_special_tokens: bool,
+    ) -> int:
+        if not add_special_tokens:
+            return 0
+        if hasattr(tokenizer, "num_special_tokens_to_add"):
+            return tokenizer.num_special_tokens_to_add(pair=False)
+        return len(tokenizer.build_inputs_with_special_tokens([]))
+
+    def _add_similarity_special_tokens(
+            self,
+            tokenizer,
+            token_ids: list[int],
+            add_special_tokens: bool,
+    ) -> list[int]:
+        if not add_special_tokens:
+            return token_ids
+        return tokenizer.build_inputs_with_special_tokens(token_ids)
 
     def _convert_to_similarity_response(
         self,
@@ -272,18 +432,20 @@ class OpenAIServingEmbedding(OpenAIServing):
 
     def _convert_to_openai_embedding_request(
         self,
-        request: SimilarityResponse,
+        request: SimilarityRequest,
     ) -> EmbeddingCompletionRequest:
         return EmbeddingCompletionRequest(
-            model=self._get_model_name(None),
+            model=self._get_model_name(request.model),
             input=[request.text_1, request.text_2],
-            encoding_format=request.encoding_format,
+            encoding_format="float",
             dimensions=request.dimensions,
             user=request.user,
             truncate_prompt_tokens=request.truncate_prompt_tokens,
+            add_special_tokens=request.add_special_tokens,
+            priority=request.priority,
         )
 
-    def _cosine_similarity_0_1(self,vec1, vec2):
+    def _cosine_similarity_0_1(self, vec1, vec2):
         v1 = np.array(vec1)
         v2 = np.array(vec2)
         cos = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))

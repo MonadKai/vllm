@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>大模型推理服务端到端健康检测设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --paper: #ffffff;
+      --text: #1f2937;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --accent: #0f766e;
+      --accent-soft: #e6f4f1;
+      --warn: #a16207;
+      --warn-soft: #fff7d6;
+      --code: #0f172a;
+      --code-bg: #eef2f7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial,
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+    }
+
+    .page {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+
+    header {
+      padding: 32px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 32px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 860px;
+      margin: 0;
+      font-size: 16px;
+    }
+
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 28px 32px;
+      margin: 18px 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 22px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 17px;
+      line-height: 1.4;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 10px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: var(--code-bg);
+      color: var(--code);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px 18px;
+      overflow: auto;
+      border-radius: 8px;
+      background: #111827;
+      color: #e5e7eb;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f1f5f9;
+      font-weight: 650;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 14px 16px;
+      border-radius: 6px;
+      margin: 14px 0;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+      margin: 18px 0;
+    }
+
+    .node {
+      min-height: 70px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-weight: 600;
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px 20px;
+      margin-top: 16px;
+    }
+
+    .toc a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .toc a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        padding: 20px 14px 40px;
+      }
+
+      header,
+      section {
+        padding: 22px 18px;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>大模型推理服务端到端健康检测设计</h1>
+      <p class="subtitle">
+        面向 Kubernetes 部署的 vLLM/OpenAI-compatible 推理服务，设计一套跨模型、跨版本、
+        可用于单实例摘流与全链路告警的真实推理探测方案。
+      </p>
+      <nav class="toc">
+        <a href="#goals">目标与边界</a>
+        <a href="#architecture">总体架构</a>
+        <a href="#sidecar">内部 Sidecar 探测</a>
+        <a href="#blackbox">外部 Blackbox 探测</a>
+        <a href="#model-types">多模型适配</a>
+        <a href="#configmap">ConfigMap 设计</a>
+        <a href="#yaml">qwen3 YAML 改造示例</a>
+        <a href="#prober">inference-prober:v1 实现</a>
+        <a href="#rollout">落地计划</a>
+      </nav>
+    </header>
+
+    <section id="goals">
+      <h2>1. 目标与边界</h2>
+      <p>
+        目标是在模型服务进程仍然存活、基础健康检查仍然返回成功的情况下，识别真实推理链路是否不可用。
+        典型故障包括 GPU/NPU 卡异常、vLLM engine 卡死、decode 异常、Istio 路由异常、网关异常、
+        HTTP 200 但响应结构异常等。
+      </p>
+      <div class="callout">
+        <strong>核心原则：</strong>探测组件不依赖 vLLM 内部 Python API，不绑定具体 vLLM 版本，
+        只通过 HTTP 请求 OpenAI-compatible 推理接口完成验证。
+      </div>
+      <h3>设计边界</h3>
+      <ul>
+        <li>不改模型业务接口协议。</li>
+        <li>不把探测逻辑写进每个 vLLM 镜像。</li>
+        <li>探测请求必须低成本，避免明显影响线上 P99 和 GPU batch。</li>
+        <li>探测结果可用于 K8s 摘流、Prometheus 告警和平台巡检。</li>
+      </ul>
+    </section>
+
+    <section id="architecture">
+      <h2>2. 总体架构</h2>
+      <p>采用两层探测：Pod 内部 Sidecar Prober 与集群级 Blackbox Prober。</p>
+      <div class="diagram" aria-label="Probe architecture">
+        <div class="node">Blackbox Prober</div>
+        <div class="arrow">→</div>
+        <div class="node">Gateway / Istio</div>
+        <div class="arrow">→</div>
+        <div class="node">Service / Pod / vLLM</div>
+      </div>
+      <div class="diagram" aria-label="Sidecar architecture">
+        <div class="node">Kubelet</div>
+        <div class="arrow">→</div>
+        <div class="node">Sidecar /readyz</div>
+        <div class="arrow">→</div>
+        <div class="node">127.0.0.1 vLLM 推理接口</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>组件</th>
+            <th>部署位置</th>
+            <th>检测范围</th>
+            <th>主要用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Sidecar Inference Prober</td>
+            <td>每个模型 Pod 内</td>
+            <td>本 Pod 的 vLLM、tokenizer、scheduler、GPU/NPU decode</td>
+            <td>单实例摘流</td>
+          </tr>
+          <tr>
+            <td>Blackbox Inference Prober</td>
+            <td>独立 Deployment</td>
+            <td>业务域名、网关、Istio、Service、Pod、推理接口</td>
+            <td>端到端告警与巡检</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="sidecar">
+      <h2>3. 内部 Sidecar 探测设计</h2>
+      <p>
+        Sidecar Prober 跟随模型 Pod 部署，定时请求本地 vLLM 接口，例如
+        <code>http://127.0.0.1:8000/v1/chat/completions</code>。
+        它将探测结果缓存到内存，并通过自己的 <code>/readyz</code> 暴露给 K8s。
+      </p>
+      <h3>工作流程</h3>
+      <ol>
+        <li>后台线程按固定间隔发起真实推理请求。</li>
+        <li>校验 HTTP 状态码、JSON 结构、接口类型对应字段和延迟。</li>
+        <li>连续失败达到阈值后，将本地状态标记为 unhealthy。</li>
+        <li>K8s readinessProbe 访问 sidecar 的 <code>/readyz</code>。</li>
+        <li><code>/readyz</code> 返回 503 后，该 Pod 从 Service endpoints 摘除。</li>
+        <li>连续成功达到阈值后，<code>/readyz</code> 恢复 200，Pod 重新接流量。</li>
+      </ol>
+      <div class="warn callout">
+        <strong>注意：</strong><code>/readyz</code> 不实时触发推理，只返回后台探测缓存结果。
+        否则 kubelet 的高频 probe 会直接消耗 GPU/NPU 推理资源。
+      </div>
+      <h3>推荐参数</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>参数</th>
+            <th>建议值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>INTERVAL_SECONDS</code></td>
+            <td>30</td>
+            <td>后台真实推理探测间隔。</td>
+          </tr>
+          <tr>
+            <td><code>TIMEOUT_SECONDS</code></td>
+            <td>5</td>
+            <td>单次探测超时时间。</td>
+          </tr>
+          <tr>
+            <td><code>FAILURE_THRESHOLD</code></td>
+            <td>3</td>
+            <td>连续失败多少次后摘流。</td>
+          </tr>
+          <tr>
+            <td><code>SUCCESS_THRESHOLD</code></td>
+            <td>2</td>
+            <td>连续成功多少次后恢复。</td>
+          </tr>
+          <tr>
+            <td><code>LATENCY_THRESHOLD_MS</code></td>
+            <td>5000</td>
+            <td>超过阈值视为探测失败。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="blackbox">
+      <h2>4. 外部 Blackbox 探测设计</h2>
+      <p>
+        Blackbox Prober 独立部署，不在模型 Pod 内。它从业务入口或网关域名发起请求，
+        用来覆盖 Gateway、Istio、VirtualService、Service、Pod 到 vLLM 的端到端链路。
+      </p>
+      <h3>适用场景</h3>
+      <ul>
+        <li>业务域名不可访问。</li>
+        <li>Istio VirtualService rewrite 或 header 路由异常。</li>
+        <li>网关超时、连接池、鉴权配置异常。</li>
+        <li>服务整体 SLA 告警。</li>
+        <li>多模型、多集群巡检。</li>
+      </ul>
+      <h3>Blackbox target 示例</h3>
+      <pre><code>apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-blackbox-prober-targets
+  namespace: prod-pre
+data:
+  targets.yaml: |
+    targets:
+      - name: qwen3-32b-fp8-v2
+        type: chat
+        url: http://pre-llm-inference-api.brapp.com/qwen3-32b-fp8/v1/chat/completions
+        model: qwen3-32b-fp8
+        intervalSeconds: 30
+        timeoutSeconds: 5
+        latencyThresholdMs: 5000
+        failureThreshold: 3
+        successThreshold: 2
+        headers:
+          content-type: application/json
+        body:
+          messages:
+            - role: user
+              content: ping
+          max_tokens: 1
+          temperature: 0</code></pre>
+    </section>
+
+    <section id="model-types">
+      <h2>5. 多模型与多接口适配</h2>
+      <p>
+        Prober 通过 <code>PROBE_TYPE</code> 或 target 的 <code>type</code> 决定请求和校验方式。
+        这样同一套镜像可以覆盖 chat、completion、embedding、rerank 等模型。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>接口</th>
+            <th>最小请求</th>
+            <th>成功校验</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>chat</td>
+            <td><code>/v1/chat/completions</code></td>
+            <td><code>messages + max_tokens=1</code></td>
+            <td><code>choices[0].message.content</code> 或 <code>tool_calls</code> 存在，<code>usage.total_tokens &gt; 0</code></td>
+          </tr>
+          <tr>
+            <td>completion</td>
+            <td><code>/v1/completions</code></td>
+            <td><code>prompt + max_tokens=1</code></td>
+            <td><code>choices[0].text</code> 存在。</td>
+          </tr>
+          <tr>
+            <td>embedding</td>
+            <td><code>/v1/embeddings</code></td>
+            <td><code>input=ping</code></td>
+            <td><code>data[0].embedding</code> 是非空数组。</td>
+          </tr>
+          <tr>
+            <td>rerank</td>
+            <td><code>/v1/rerank</code> 或 <code>/rerank</code></td>
+            <td><code>query + documents</code></td>
+            <td><code>results</code>、<code>scores</code> 或 <code>data</code> 存在。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="configmap">
+      <h2>6. ConfigMap 设计</h2>
+      <p>
+        ConfigMap 用来保存探测目标和请求体，让 prober 镜像保持通用。Sidecar 与 Blackbox 的配置粒度不同。
+      </p>
+      <h3>Sidecar 配置</h3>
+      <p>
+        Sidecar 只探测当前 Pod 内的一个模型，第一版可以直接用环境变量配置。模型数量多起来后，
+        可以改成每个模型一个独立 ConfigMap。
+      </p>
+      <pre><code>apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen3-32b-fp8-v2-prober-cm
+  namespace: prod-pre
+data:
+  probe.yaml: |
+    name: qwen3-32b-fp8-v2
+    type: chat
+    url: http://127.0.0.1:8000/v1/chat/completions
+    model: qwen3-32b-fp8
+    intervalSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 2
+    body:
+      messages:
+        - role: user
+          content: ping
+      max_tokens: 1
+      temperature: 0</code></pre>
+      <h3>Blackbox 配置</h3>
+      <p>
+        Blackbox Prober 负责巡检多个模型入口，适合用一个集中 ConfigMap 管理所有 target，
+        也可以按 namespace、业务线或环境拆分。
+      </p>
+    </section>
+
+    <section id="yaml">
+      <h2>7. qwen3-32b-fp8-v2 YAML 改造示例</h2>
+      <p>在你的 Deployment 中保留原 vLLM 容器，并新增 <code>inference-prober</code> sidecar。</p>
+      <pre><code>containers:
+  - name: app
+    image: registry.100credit.cn/xdynamic/x86_64/nvidia/vllm-openai:v0.10.2
+    command:
+      - /bin/sh
+      - -c
+      - |
+        vllm serve /MODEL \
+          --chat_template /MODEL/chat_template.jinja \
+          --trust-remote-code \
+          --quantization compressed-tensors \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --dtype auto \
+          --max-model-len 20480 \
+          --max-num-batched-tokens 8192 \
+          -tp 2 \
+          --served-model-name qwen3-32b-fp8 \
+          --gpu-memory-utilization 0.9 \
+          --enable-auto-tool-choice \
+          --tool-call-parser hermes
+    ports:
+      - containerPort: 8000
+        name: http
+        protocol: TCP
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8000
+      initialDelaySeconds: 3
+      periodSeconds: 10
+
+  - name: inference-prober
+    image: registry.100credit.cn/xdynamic/llmops/inference-prober:v1
+    imagePullPolicy: IfNotPresent
+    env:
+      - name: PROBE_NAME
+        value: qwen3-32b-fp8-v2
+      - name: PROBE_TYPE
+        value: chat
+      - name: TARGET_URL
+        value: http://127.0.0.1:8000/v1/chat/completions
+      - name: MODEL_NAME
+        value: qwen3-32b-fp8
+      - name: INTERVAL_SECONDS
+        value: "30"
+      - name: TIMEOUT_SECONDS
+        value: "5"
+      - name: FAILURE_THRESHOLD
+        value: "3"
+      - name: SUCCESS_THRESHOLD
+        value: "2"
+      - name: LATENCY_THRESHOLD_MS
+        value: "5000"
+      - name: PROBE_BODY
+        value: |
+          {
+            "model": "qwen3-32b-fp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "ping"
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0
+          }
+    ports:
+      - containerPort: 18080
+        name: probe
+        protocol: TCP
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 18080
+      initialDelaySeconds: 60
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi</code></pre>
+      <div class="callout">
+        K8s 只有当 Pod 内所有容器都 Ready 时，Pod 才会进入 Service endpoints。
+        因此 sidecar 的 <code>/readyz</code> 失败后，这个模型 Pod 会自动被摘流。
+      </div>
+    </section>
+
+    <section id="prober">
+      <h2>8. inference-prober:v1 实现建议</h2>
+      <p>第一版可以用 Python 实现，镜像只依赖 <code>requests</code>，保持轻量。</p>
+      <h3>接口</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>路径</th>
+            <th>用途</th>
+            <th>返回</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/livez</code></td>
+            <td>prober 进程存活。</td>
+            <td>固定 200。</td>
+          </tr>
+          <tr>
+            <td><code>/readyz</code></td>
+            <td>返回后台探测缓存结果。</td>
+            <td>healthy 返回 200，unhealthy 返回 503。</td>
+          </tr>
+          <tr>
+            <td><code>/metrics</code></td>
+            <td>Prometheus 指标。</td>
+            <td>probe 成功状态、延迟、连续失败次数等。</td>
+          </tr>
+        </tbody>
+      </table>
+      <h3>核心指标</h3>
+      <pre><code>inference_probe_ready{model="qwen3-32b-fp8",type="chat"} 1
+inference_probe_latency_ms{model="qwen3-32b-fp8",type="chat"} 42
+inference_probe_consecutive_failures{model="qwen3-32b-fp8",type="chat"} 0
+inference_probe_last_success_timestamp{model="qwen3-32b-fp8",type="chat"} 1781493603</code></pre>
+      <h3>错误分类</h3>
+      <ul>
+        <li><code>timeout</code>：请求超时。</li>
+        <li><code>connection_error</code>：连接失败。</li>
+        <li><code>http_5xx</code>：服务端错误。</li>
+        <li><code>http_4xx</code>：请求或鉴权异常。</li>
+        <li><code>json_parse_error</code>：响应不是合法 JSON。</li>
+        <li><code>schema_invalid</code>：响应结构不符合对应模型类型。</li>
+        <li><code>empty_output</code>：响应为空。</li>
+        <li><code>latency_exceeded</code>：延迟超过阈值。</li>
+      </ul>
+    </section>
+
+    <section id="rollout">
+      <h2>9. 落地计划</h2>
+      <h3>第一阶段：单模型 Sidecar 灰度</h3>
+      <ul>
+        <li>实现 <code>inference-prober:v1</code>。</li>
+        <li>接入一个 chat 模型，例如 <code>qwen3-32b-fp8-v2</code>。</li>
+        <li>观察探测 QPS、latency、业务 P99 是否受影响。</li>
+        <li>验证连续失败后 Pod 是否自动摘流。</li>
+      </ul>
+      <h3>第二阶段：多模型适配</h3>
+      <ul>
+        <li>增加 embedding、rerank、completion 校验逻辑。</li>
+        <li>抽象 probe profile，让平台根据模型类型自动生成配置。</li>
+        <li>为不同模型设置不同 interval、timeout 和 latency 阈值。</li>
+      </ul>
+      <h3>第三阶段：外部 Blackbox 巡检</h3>
+      <ul>
+        <li>部署独立 blackbox prober。</li>
+        <li>通过 ConfigMap 管理所有模型入口。</li>
+        <li>接入 Prometheus 和 Alertmanager。</li>
+        <li>按模型、namespace、业务域名、集群维度配置告警。</li>
+      </ul>
+      <h3>最终形态</h3>
+      <pre><code>单 Pod 故障摘流：Sidecar Inference Prober
+端到端链路告警：Blackbox Inference Prober
+多模型适配：probe_type + request body + validation rule
+跨版本适配：只依赖 OpenAI-compatible HTTP API</code></pre>
+    </section>
+  </main>
+</body>
+</html>
